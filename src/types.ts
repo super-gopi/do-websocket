@@ -1,80 +1,3 @@
-// export interface Env {
-//   WEBSOCKET_BRIDGE: DurableObjectNamespace;
-// }
-
-// export type ClientType = 'runtime' | 'agent';
-
-// export interface Connection {
-//   id: string;
-//   type: ClientType;
-//   socket: WebSocket;
-//   connectedAt: number;
-// }
-
-// export interface BaseMessage {
-//   type: string;
-//   timestamp: number;
-//   requestId?: string;
-// }
-
-// export interface ConnectedMessage extends BaseMessage {
-//   type: 'connected';
-//   clientId: string;
-//   clientType: ClientType;
-//   message: string;
-// }
-
-// export interface GraphQLQueryMessage extends BaseMessage {
-//   type: 'graphql_query';
-//   query: string;
-//   variables?: Record<string, any>;
-//   requestId: string;
-//   runtimeId?: string; // Added by bridge when forwarding to agent
-// }
-
-// export interface QueryResponseMessage extends BaseMessage {
-//   type: 'query_response';
-//   requestId: string;
-//   data?: any;
-//   error?: string;
-//   runtimeId?: string; // Used to route response back to runtime
-// }
-
-// export interface PingMessage extends BaseMessage {
-//   type: 'ping';
-// }
-
-// export interface PongMessage extends BaseMessage {
-//   type: 'pong';
-// }
-
-// export interface ErrorMessage extends BaseMessage {
-//   type: 'error';
-//   message: string;
-//   error?: string;
-//   requestId?: string;
-// }
-
-// export type WebSocketMessage = 
-//   | ConnectedMessage 
-//   | GraphQLQueryMessage 
-//   | QueryResponseMessage 
-//   | PingMessage 
-//   | PongMessage 
-//   | ErrorMessage;
-
-// export interface ConnectionStatus {
-//   activeConnections: number;
-//   connections: Array<{
-//     id: string;
-//     type: ClientType;
-//     connectedAt: number;
-//     connectedFor: number;
-//   }>;
-//   timestamp: number;
-// }
-
-
 export interface Env {
   WEBSOCKET_BRIDGE: DurableObjectNamespace;
 }
@@ -123,6 +46,21 @@ export interface QueryResponseMessage extends BaseMessage {
   runtimeId?: string;
 }
 
+export interface GetDocsMessage extends BaseMessage {
+  type: 'get_docs';
+  requestId: string;
+  userId: string;
+  error?: string;
+}
+
+export interface DocsMessage extends BaseMessage {
+  type: 'docs';
+  requestId: string;
+  userId: string;
+  data?: any;
+  error?: string;
+} 
+
 export interface UserConnectionMessage extends BaseMessage {
   type: 'user_connection';
   action: 'connect' | 'disconnect';
@@ -153,7 +91,9 @@ export type WebSocketMessage =
   | UserConnectionMessage
   | PingMessage 
   | PongMessage 
-  | ErrorMessage;
+  | ErrorMessage
+  | DocsMessage
+  | GetDocsMessage;
 
 export interface UserConnections {
   userId: string;

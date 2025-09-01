@@ -8,6 +8,12 @@ compatibility_flags = ["nodejs_compat"]
 name = "WEBSOCKET_BRIDGE"
 class_name = "WebSocketBridge"
 
+# REQUIRED: Durable Object migration configuration
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WebSocketBridge"]
+
+
 # Optional: Add environment variables
 [vars]
 # Add any environment variables here if needed

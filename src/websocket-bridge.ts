@@ -189,7 +189,15 @@ export class WebSocketBridge implements DurableObject {
         case 'graphql_query':
           await this.forwardToUserDataAgent(senderId, data);
           break;
-          
+        
+        case 'get_docs':
+          await this.forwardToUserDataAgent(senderId, data);
+          break;
+        case 'docs':
+          await this.forwardToUserRuntime(senderId, data);
+          break;
+
+
         case 'query_response':
           await this.forwardToUserRuntime(senderId, data);
           break;
@@ -210,7 +218,7 @@ export class WebSocketBridge implements DurableObject {
   }
 
   private async forwardToUserDataAgent(runtimeId: string, data: WebSocketMessage): Promise<void> {
-    if (data.type !== 'graphql_query') return;
+    if (data.type !== 'graphql_query' && data.type !== 'get_docs') return;
     
     const queryMessage = data as any; // GraphQLQueryMessage
     const userId = queryMessage.userId;
@@ -461,7 +469,7 @@ export class WebSocketBridge implements DurableObject {
 }
 
   private async forwardToUserRuntime(agentId: string, data: WebSocketMessage): Promise<void> {
-    if (data.type !== 'query_response') return;
+    if (data.type !== 'query_response' && data.type !== 'docs') return;
     
     const response = data as any; // QueryResponseMessage
     const runtimeId = response.runtimeId;
