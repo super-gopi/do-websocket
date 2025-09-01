@@ -1,4 +1,4 @@
-import { Connection, ClientType, WebSocketMessage, Env, ConnectionStatus, UserConnections } from './types';
+import { Connection, ClientType, WebSocketMessage, Env, ConnectionStatus, UserConnections, DocsMessage, GetDocsMessage } from './types';
 
 export class WebSocketBridge implements DurableObject {
   private connections: Map<string, Connection>;
@@ -190,12 +190,13 @@ export class WebSocketBridge implements DurableObject {
           await this.forwardToUserDataAgent(senderId, data);
           break;
         
-        case 'get_docs':
-          await this.forwardToUserDataAgent(senderId, data);
-          break;
-        case 'docs':
-          await this.forwardToUserRuntime(senderId, data);
-          break;
+        case 'get_docs':  // NEW: Handle docs requests
+        await this.forwardGetDocsToAgent(senderId, data);
+        break;
+        
+      case 'docs': // NEW: Handle docs responses
+        await this.forwardDocsToRuntime(senderId, data);
+        break;
 
 
         case 'query_response':
@@ -279,6 +280,173 @@ export class WebSocketBridge implements DurableObject {
       console.error(`Failed to forward message to data agent for user ${userId}:`, error);
       this.sendError(runtimeId, `Failed to forward message to data agent for user ${userId}`, queryMessage.requestId);
     }
+  }
+
+  private async forwardGetDocsToAgent(runtimeId: string, data: WebSocketMessage): Promise<void> {
+    if (data.type !== 'get_docs') return;
+    
+    const docsRequest = data as GetDocsMessage;
+    const userId = docsRequest.userId;
+    
+    if (!userId) {
+      this.sendError(runtimeId, 'Missing userId in docs request', docsRequest.requestId);
+      return;
+    }
+    
+    const userDataAgent = this.findUserDataAgent(userId);
+    
+    if (!userDataAgent) {
+      console.log(`No data agent for user ${userId}, returning dummy docs for testing`);
+      
+      // Generate dummy docs data
+      const dummyDocs = this.generateDummyDocs(userId);
+      
+      // Send dummy response back to runtime
+      const dummyResponse: DocsMessage = {
+        type: 'docs',
+        requestId: docsRequest.requestId,
+        userId: userId,
+        data: dummyDocs,
+        timestamp: Date.now()
+      };
+      
+      const runtime = this.connections.get(runtimeId);
+      if (runtime) {
+        try {
+          runtime.socket.send(JSON.stringify(dummyResponse));
+          console.log(`Sent dummy docs response to runtime ${runtimeId} for user ${userId}`);
+        } catch (error) {
+          console.error(`Failed to send dummy docs response to runtime:`, error);
+        }
+      }
+      return;
+    }
+    
+    // Forward docs request to data agent
+    const forwardMessage: GetDocsMessage = {
+      ...docsRequest,
+      runtimeId: runtimeId
+    } as any;
+    
+    try {
+      userDataAgent.socket.send(JSON.stringify(forwardMessage));
+      console.log(`Forwarded docs request from runtime ${runtimeId} to agent ${userDataAgent.id} for user ${userId}`);
+    } catch (error) {
+      console.error(`Failed to forward docs request to data agent for user ${userId}:`, error);
+      this.sendError(runtimeId, `Failed to forward docs request to data agent for user ${userId}`, docsRequest.requestId);
+    }
+  }
+
+  private async forwardDocsToRuntime(agentId: string, data: WebSocketMessage): Promise<void> {
+    if (data.type !== 'docs') return;
+    
+    const response = data as DocsMessage;
+    const runtimeId = (response as any).runtimeId;
+    const userId = response.userId;
+    
+    if (!runtimeId) {
+      console.error('No runtime ID in docs response');
+      return;
+    }
+    
+    if (!userId) {
+      console.error('No user ID in docs response');
+      return;
+    }
+    
+    const runtime = this.connections.get(runtimeId);
+    if (!runtime) {
+      console.error(`Runtime ${runtimeId} not found`);
+      return;
+    }
+    
+    if (runtime.userId !== userId) {
+      console.error(`Runtime user mismatch: expected ${userId}, got ${runtime.userId}`);
+      return;
+    }
+    
+    try {
+      runtime.socket.send(JSON.stringify(response));
+      console.log(`Forwarded docs response from agent ${agentId} to runtime ${runtimeId} for user ${userId}`);
+    } catch (error) {
+      console.error(`Failed to forward docs response to runtime for user ${userId}:`, error);
+    }
+  }
+
+  // NEW: Generate dummy docs data for testing
+  private generateDummyDocs(userId?: string): any {
+    return {
+      databaseName: `user_${userId}_database`,
+      version: '1.0.0',
+      documentation: 'Database documentation for project',
+      tables: {
+        users: {
+          description: 'User accounts and profiles',
+          columns: {
+            id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique user identifier' },
+            email: { type: 'VARCHAR(255)', required: true, unique: true, description: 'User email address' },
+            name: { type: 'VARCHAR(100)', required: true, description: 'User full name' },
+            role: { type: 'VARCHAR(50)', required: false, default: 'user', description: 'User role' },
+            created_at: { type: 'TIMESTAMP', required: true, description: 'Account creation time' },
+            updated_at: { type: 'TIMESTAMP', required: true, description: 'Last update time' }
+          },
+          relationships: {
+            posts: { type: 'one-to-many', table: 'posts', foreignKey: 'author_id' },
+            comments: { type: 'one-to-many', table: 'comments', foreignKey: 'author_id' },
+            orders: { type: 'one-to-many', table: 'orders', foreignKey: 'user_id' }
+          }
+        },
+        posts: {
+          description: 'Blog posts and articles',
+          columns: {
+            id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique post identifier' },
+            title: { type: 'VARCHAR(200)', required: true, description: 'Post title' },
+            content: { type: 'TEXT', required: false, description: 'Post content body' },
+            author_id: { type: 'UUID', required: true, foreignKey: 'users.id', description: 'Reference to post author' },
+            published: { type: 'BOOLEAN', required: true, default: false, description: 'Whether post is published' },
+            created_at: { type: 'TIMESTAMP', required: true, description: 'Post creation time' },
+            updated_at: { type: 'TIMESTAMP', required: true, description: 'Last update time' }
+          },
+          relationships: {
+            author: { type: 'belongs-to', table: 'users', foreignKey: 'author_id' },
+            comments: { type: 'one-to-many', table: 'comments', foreignKey: 'post_id' }
+          }
+        },
+        comments: {
+          description: 'User comments on posts',
+          columns: {
+            id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique comment identifier' },
+            content: { type: 'TEXT', required: true, description: 'Comment text' },
+            post_id: { type: 'UUID', required: true, foreignKey: 'posts.id', description: 'Reference to parent post' },
+            author_id: { type: 'UUID', required: true, foreignKey: 'users.id', description: 'Reference to comment author' },
+            created_at: { type: 'TIMESTAMP', required: true, description: 'Comment creation time' }
+          },
+          relationships: {
+            post: { type: 'belongs-to', table: 'posts', foreignKey: 'post_id' },
+            author: { type: 'belongs-to', table: 'users', foreignKey: 'author_id' }
+          }
+        },
+        orders: {
+          description: 'Customer orders and transactions',
+          columns: {
+            id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique order identifier' },
+            user_id: { type: 'UUID', required: true, foreignKey: 'users.id', description: 'Reference to customer' },
+            total: { type: 'DECIMAL(10,2)', required: true, description: 'Order total amount' },
+            status: { type: 'VARCHAR(50)', required: true, default: 'pending', description: 'Order status' },
+            created_at: { type: 'TIMESTAMP', required: true, description: 'Order creation time' }
+          },
+          relationships: {
+            user: { type: 'belongs-to', table: 'users', foreignKey: 'user_id' }
+          }
+        }
+      },
+      metadata: {
+        lastUpdated: new Date().toISOString(),
+        totalTables: 4,
+        totalColumns: 23,
+        fetchedAt: new Date().toISOString()
+      }
+    };
   }
 
   private generateDummyData(query: string, userId: string): any {
