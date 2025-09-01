@@ -95,9 +95,9 @@ export class WebSocketBridge implements DurableObject {
       this.handleDisconnection(clientId);
     });
     
-    server.addEventListener('error', (error: ErrorEvent) => {
-      console.error(`WebSocket error for ${clientType} (${clientId}):`, error.message);
-      this.handleDisconnection(clientId);
+    server.addEventListener('error', (event: Event) => {
+        console.error(`WebSocket error for ${clientType} (${clientId}):`, event.type);
+        this.handleDisconnection(clientId);
     });
     
     // Send welcome message
