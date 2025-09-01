@@ -1,0 +1,17 @@
+name = "websocket-bridge"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object binding
+[[durable_objects.bindings]]
+name = "WEBSOCKET_BRIDGE"
+class_name = "WebSocketBridge"
+
+# Optional: Add environment variables
+[vars]
+# Add any environment variables here if needed
+
+# Optional: Add secrets using wrangler secret put <name>
+# [secrets]
+# SECRET_KEY = "your_secret_here"
