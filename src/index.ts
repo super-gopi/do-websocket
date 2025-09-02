@@ -37,7 +37,7 @@ export default {
         version: '2.0.0',
         endpoints: {
           websocket: {
-            url: '/websocket?type=runtime|agent&userId=USER_ID',
+            url: '/websocket?type=runtime|agent&projectId=PROJECT_ID',
             description: 'WebSocket endpoint with user-specific routing'
           },
           status: {
@@ -54,8 +54,8 @@ export default {
           }
         },
         usage: {
-          runtime: 'ws://your-worker.workers.dev/websocket?type=runtime&userId=user123',
-          agent: 'ws://your-worker.workers.dev/websocket?type=agent&userId=user123'
+          runtime: 'ws://your-worker.workers.dev/websocket?type=runtime&projectId=2',
+          agent: 'ws://your-worker.workers.dev/websocket?type=agent&projectId=2'
         }
       }, null, 2), {
         headers: { 

@@ -9,7 +9,7 @@ export interface Connection {
   type: ClientType;
   socket: WebSocket;
   connectedAt: number;
-  userId?: string;  // NEW: Track which user this connection belongs to
+  projectId?: string;  // NEW: Track which user this connection belongs to
   metadata?: Record<string, any>; // NEW: Store additional connection info
 }
 
@@ -17,14 +17,14 @@ export interface BaseMessage {
   type: string;
   timestamp: number;
   requestId?: string;
-  userId?: string;  // NEW: Include user ID in all messages
+  projectId?: string;  // NEW: Include user ID in all messages
 }
 
 export interface ConnectedMessage extends BaseMessage {
   type: 'connected';
   clientId: string;
   clientType: ClientType;
-  userId?: string;
+  projectId?: string;
   message: string;
 }
 
@@ -33,14 +33,14 @@ export interface GraphQLQueryMessage extends BaseMessage {
   query: string;
   variables?: Record<string, any>;
   requestId: string;
-  userId: string;  // REQUIRED: Must specify which user's data to query
+  projectId: string;  // REQUIRED: Must specify which user's data to query
   runtimeId?: string;
 }
 
 export interface QueryResponseMessage extends BaseMessage {
   type: 'query_response';
   requestId: string;
-  userId: string;
+  projectId: string;
   data?: any;
   error?: string;
   runtimeId?: string;
@@ -49,14 +49,14 @@ export interface QueryResponseMessage extends BaseMessage {
 export interface GetDocsMessage extends BaseMessage {
   type: 'get_docs';
   requestId: string;
-  userId: string;
+  projectId: string;
   error?: string;
 }
 
 export interface DocsMessage extends BaseMessage {
   type: 'docs';
   requestId: string;
-  userId: string;
+  projectId: string;
   data?: any;
   error?: string;
 } 
@@ -64,7 +64,7 @@ export interface DocsMessage extends BaseMessage {
 export interface UserConnectionMessage extends BaseMessage {
   type: 'user_connection';
   action: 'connect' | 'disconnect';
-  userId: string;
+  projectId: string;
   clientType: ClientType;
 }
 
@@ -81,7 +81,7 @@ export interface ErrorMessage extends BaseMessage {
   message: string;
   error?: string;
   requestId?: string;
-  userId?: string;
+  projectId?: string;
 }
 
 export type WebSocketMessage = 
@@ -96,7 +96,7 @@ export type WebSocketMessage =
   | GetDocsMessage;
 
 export interface UserConnections {
-  userId: string;
+  projectId: string;
   runtime?: Connection;
   agents: Connection[];  // Multiple agents possible per user
   lastActivity: number;
@@ -106,7 +106,7 @@ export interface ConnectionStatus {
   activeConnections: number;
   totalUsers: number;
   userConnections: Record<string, {
-    userId: string;
+    projectId: string;
     hasRuntime: boolean;
     agentCount: number;
     lastActivity: number;
@@ -114,7 +114,7 @@ export interface ConnectionStatus {
   connections: Array<{
     id: string;
     type: ClientType;
-    userId?: string;
+    projectId?: string;
     connectedAt: number;
     connectedFor: number;
   }>;

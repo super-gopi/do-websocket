@@ -54,7 +54,7 @@ export class WebSocketBridge implements DurableObject {
 
 		const url = new URL(request.url);
 		const clientType = url.searchParams.get('type') as ClientType;
-		const userId = url.searchParams.get('userId'); // NEW: Get user ID from URL
+		const projectId = url.searchParams.get('projectId'); // NEW: Get Project ID from URL
 		const clientId = crypto.randomUUID();
 
 		// Validate required parameters
@@ -63,9 +63,9 @@ export class WebSocketBridge implements DurableObject {
 			return new Response('Invalid client type', { status: 400 });
 		}
 
-		if (!userId) {
-			server.close(1008, 'Missing userId parameter. Use ?userId=user123');
-			return new Response('Missing userId parameter', { status: 400 });
+		if (!projectId) {
+			server.close(1008, 'Missing projectId parameter. Use ?projectId=project123');
+			return new Response('Missing projectId parameter', { status: 400 });
 		}
 
 		// Store connection with user association
@@ -74,7 +74,7 @@ export class WebSocketBridge implements DurableObject {
 			type: clientType,
 			socket: server,
 			connectedAt: Date.now(),
-			userId: userId,
+			projectId: projectId,
 			metadata: {
 				userAgent: request.headers.get('User-Agent'),
 				origin: request.headers.get('Origin')
@@ -82,9 +82,9 @@ export class WebSocketBridge implements DurableObject {
 		};
 
 		this.connections.set(clientId, connection);
-		this.updateUserConnections(userId, connection, 'connect');
+		this.updateUserConnections(projectId, connection, 'connect');
 
-		console.log(`${clientType} connected for user ${userId} with ID: ${clientId}`);
+		console.log(`${clientType} connected for proect ${projectId} with ID: ${clientId}`);
 
 		// Set up event listeners
 		server.addEventListener('message', (event: MessageEvent) => {
@@ -105,8 +105,8 @@ export class WebSocketBridge implements DurableObject {
 			type: 'connected',
 			clientId: clientId,
 			clientType: clientType,
-			userId: userId,
-			message: `Connected as ${clientType} for user ${userId}`,
+			projectId: projectId,
+			message: `Connected as ${clientType} for project ${projectId}`,
 			timestamp: Date.now()
 		};
 
@@ -122,27 +122,27 @@ export class WebSocketBridge implements DurableObject {
 		const connection = this.connections.get(clientId);
 		if (!connection) return;
 
-		console.log(`${connection.type} (${clientId}) for user ${connection.userId} disconnected`);
+		console.log(`${connection.type} (${clientId}) for project ${connection.projectId} disconnected`);
 
 		// Update user connections
-		if (connection.userId) {
-			this.updateUserConnections(connection.userId, connection, 'disconnect');
+		if (connection.projectId) {
+			this.updateUserConnections(connection.projectId, connection, 'disconnect');
 		}
 
 		// Remove from main connections map
 		this.connections.delete(clientId);
 	}
 
-	private updateUserConnections(userId: string, connection: Connection, action: 'connect' | 'disconnect'): void {
-		if (!this.userConnections.has(userId)) {
-			this.userConnections.set(userId, {
-				userId: userId,
+	private updateUserConnections(projectId: string, connection: Connection, action: 'connect' | 'disconnect'): void {
+		if (!this.userConnections.has(projectId)) {
+			this.userConnections.set(projectId, {
+				projectId: projectId,
 				agents: [],
 				lastActivity: Date.now()
 			});
 		}
 
-		const userConn = this.userConnections.get(userId)!;
+		const userConn = this.userConnections.get(projectId)!;
 		userConn.lastActivity = Date.now();
 
 		if (action === 'connect') {
@@ -160,7 +160,7 @@ export class WebSocketBridge implements DurableObject {
 
 			// Clean up if no connections left for this user
 			if (!userConn.runtime && userConn.agents.length === 0) {
-				this.userConnections.delete(userId);
+				this.userConnections.delete(projectId);
 			}
 		}
 	}
@@ -176,14 +176,14 @@ export class WebSocketBridge implements DurableObject {
 			}
 
 			// Update last activity for user
-			if (sender.userId) {
-				const userConn = this.userConnections.get(sender.userId);
+			if (sender.projectId) {
+				const userConn = this.userConnections.get(sender.projectId);
 				if (userConn) {
 					userConn.lastActivity = Date.now();
 				}
 			}
 
-			console.log(`Message from ${sender.type} (${senderId}) for user ${sender.userId}:`, data.type);
+			console.log(`Message from ${sender.type} (${senderId}) for project ${sender.projectId}:`, data.type);
 
 			switch (data.type) {
 				case 'graphql_query':
@@ -222,20 +222,20 @@ export class WebSocketBridge implements DurableObject {
 		if (data.type !== 'graphql_query') return;
 
 		const queryMessage = data as any; // GraphQLQueryMessage
-		const userId = queryMessage.userId;
+		const projectId = queryMessage.projectId;
 
-		if (!userId) {
-			this.sendError(runtimeId, 'Missing userId in GraphQL query', queryMessage.requestId);
+		if (!projectId) {
+			this.sendError(runtimeId, 'Missing projectId in GraphQL query', queryMessage.requestId);
 			return;
 		}
 
 		// Find data agent for this specific user
-		const userDataAgent = this.findUserDataAgent(userId);
+		const userDataAgent = this.findUserDataAgent(projectId);
 
 		if (!userDataAgent) {
 			this.sendError(
 				runtimeId,
-				`No data agent connected for user ${userId}`,
+				`No data agent connected for user ${projectId}`,
 				queryMessage.requestId
 			);
 			return;
@@ -275,10 +275,10 @@ export class WebSocketBridge implements DurableObject {
 
 		try {
 			userDataAgent.socket.send(JSON.stringify(forwardMessage));
-			console.log(`Forwarded GraphQL query from runtime ${runtimeId} to agent ${userDataAgent.id} for user ${userId}`);
+			console.log(`Forwarded GraphQL query from runtime ${runtimeId} to agent ${userDataAgent.id} for project ${projectId}`);
 		} catch (error) {
-			console.error(`Failed to forward message to data agent for user ${userId}:`, error);
-			this.sendError(runtimeId, `Failed to forward message to data agent for user ${userId}`, queryMessage.requestId);
+			console.error(`Failed to forward message to data agent for project ${projectId}:`, error);
+			this.sendError(runtimeId, `Failed to forward message to data agent for project ${projectId}`, queryMessage.requestId);
 		}
 	}
 
@@ -286,14 +286,14 @@ export class WebSocketBridge implements DurableObject {
 		if (data.type !== 'get_docs') return;
 
 		const docsRequest = data as GetDocsMessage;
-		const userId = docsRequest.userId;
+		const projectId = docsRequest.projectId;
 
-		if (!userId) {
-			this.sendError(runtimeId, 'Missing userId in docs request', docsRequest.requestId);
+		if (!projectId) {
+			this.sendError(runtimeId, 'Missing projectId in docs request', docsRequest.requestId);
 			return;
 		}
 
-		const userDataAgent = this.findUserDataAgent(userId);
+		const userDataAgent = this.findUserDataAgent(projectId);
 
 		if (!userDataAgent) {
 			// console.log(`No data agent for user ${userId}, returning dummy docs for testing`);
@@ -323,7 +323,7 @@ export class WebSocketBridge implements DurableObject {
 
 			this.sendError(
 				runtimeId,
-				`No data agent connected for user ${userId}`,
+				`No data agent connected for project ${projectId}`,
 				docsRequest.requestId
 			);
 			return;
@@ -337,10 +337,10 @@ export class WebSocketBridge implements DurableObject {
 
 		try {
 			userDataAgent.socket.send(JSON.stringify(forwardMessage));
-			console.log(`Forwarded docs request from runtime ${runtimeId} to agent ${userDataAgent.id} for user ${userId}`);
+			console.log(`Forwarded docs request from runtime ${runtimeId} to agent ${userDataAgent.id} for project ${projectId}`);
 		} catch (error) {
-			console.error(`Failed to forward docs request to data agent for user ${userId}:`, error);
-			this.sendError(runtimeId, `Failed to forward docs request to data agent for user ${userId}`, docsRequest.requestId);
+			console.error(`Failed to forward docs request to data agent for project ${projectId}:`, error);
+			this.sendError(runtimeId, `Failed to forward docs request to data agent for proectId ${projectId}`, docsRequest.requestId);
 		}
 	}
 
@@ -349,15 +349,15 @@ export class WebSocketBridge implements DurableObject {
 
 		const response = data as DocsMessage;
 		const runtimeId = (response as any).runtimeId;
-		const userId = response.userId;
+		const projectId = response.projectId;	
 
 		if (!runtimeId) {
 			console.error('No runtime ID in docs response');
 			return;
 		}
 
-		if (!userId) {
-			console.error('No user ID in docs response');
+		if (!projectId) {
+			console.error('No project ID in docs response');
 			return;
 		}
 
@@ -367,16 +367,16 @@ export class WebSocketBridge implements DurableObject {
 			return;
 		}
 
-		if (runtime.userId !== userId) {
-			console.error(`Runtime user mismatch: expected ${userId}, got ${runtime.userId}`);
+		if (runtime.projectId !== projectId) {
+			console.error(`Runtime project mismatch: expected ${projectId}, got ${runtime.projectId}`);
 			return;
 		}
 
 		try {
 			runtime.socket.send(JSON.stringify(response));
-			console.log(`Forwarded docs response from agent ${agentId} to runtime ${runtimeId} for user ${userId}`);
+			console.log(`Forwarded docs response from agent ${agentId} to runtime ${runtimeId} for project ${projectId}`);
 		} catch (error) {
-			console.error(`Failed to forward docs response to runtime for user ${userId}:`, error);
+			console.error(`Failed to forward docs response to runtime for project ${projectId}:`, error);
 		}
 	}
 
@@ -644,19 +644,19 @@ export class WebSocketBridge implements DurableObject {
 	}
 
 	private async forwardToUserRuntime(agentId: string, data: WebSocketMessage): Promise<void> {
-		if (data.type !== 'query_response' && data.type !== 'docs') return;
+		if (data.type !== 'query_response') return;
 
 		const response = data as any; // QueryResponseMessage
 		const runtimeId = response.runtimeId;
-		const userId = response.userId;
+		const projectId = response.projectId;
 
 		if (!runtimeId) {
 			console.error('No runtime ID in query response');
 			return;
 		}
 
-		if (!userId) {
-			console.error('No user ID in query response');
+		if (!projectId) {
+			console.error('No project ID in query response');
 			return;
 		}
 
@@ -667,16 +667,16 @@ export class WebSocketBridge implements DurableObject {
 		}
 
 		// Verify the runtime belongs to the same user
-		if (runtime.userId !== userId) {
-			console.error(`Runtime user mismatch: expected ${userId}, got ${runtime.userId}`);
+		if (runtime.projectId !== projectId) {
+			console.error(`Runtime user mismatch: expected ${projectId}, got ${runtime.projectId}`);
 			return;
 		}
 
 		try {
 			runtime.socket.send(JSON.stringify(response));
-			console.log(`Forwarded query response from agent ${agentId} to runtime ${runtimeId} for user ${userId}`);
+			console.log(`Forwarded query response from agent ${agentId} to runtime ${runtimeId} for project ${projectId}`);
 		} catch (error) {
-			console.error(`Failed to forward response to runtime for user ${userId}:`, error);
+			console.error(`Failed to forward response to runtime for project ${projectId}:`, error);
 		}
 	}
 
@@ -715,7 +715,7 @@ export class WebSocketBridge implements DurableObject {
 			type: 'error',
 			message,
 			requestId,
-			userId: client.userId,
+			projectId: client.projectId,
 			timestamp: Date.now()
 		};
 
@@ -730,15 +730,15 @@ export class WebSocketBridge implements DurableObject {
 		const connections = Array.from(this.connections.values()).map(conn => ({
 			id: conn.id,
 			type: conn.type,
-			userId: conn.userId,
+			projectId: conn.projectId,
 			connectedAt: conn.connectedAt,
 			connectedFor: Date.now() - conn.connectedAt
 		}));
 
 		const userConnections: Record<string, any> = {};
-		for (const [userId, userConn] of this.userConnections.entries()) {
-			userConnections[userId] = {
-				userId: userId,
+		for (const [projectId, userConn] of this.userConnections.entries()) {
+			userConnections[projectId] = {
+				projectId: projectId,
 				hasRuntime: !!userConn.runtime,
 				agentCount: userConn.agents.length,
 				lastActivity: userConn.lastActivity
@@ -762,8 +762,8 @@ export class WebSocketBridge implements DurableObject {
 	}
 
 	private async getUsersStatus(): Promise<Response> {
-		const users = Array.from(this.userConnections.entries()).map(([userId, userConn]) => ({
-			userId: userId,
+		const users = Array.from(this.userConnections.entries()).map(([projectId, userConn]) => ({
+			projectId: projectId,
 			hasRuntime: !!userConn.runtime,
 			agentCount: userConn.agents.length,
 			lastActivity: userConn.lastActivity,
