@@ -233,38 +233,38 @@ export class WebSocketBridge implements DurableObject {
 		const userDataAgent = this.findUserDataAgent(projectId);
 
 		if (!userDataAgent) {
-			this.sendError(
-				runtimeId,
-				`No data agent connected for user ${projectId}`,
-				queryMessage.requestId
-			);
-			return;
-
-			//  console.log(`No data agent for user ${userId}, returning dummy data for testing`);
-
-			//   // Generate dummy data based on the query
-			//   const dummyData = this.generateDummyData(queryMessage.query, userId);
-
-			//   // Send dummy response back to runtime
-			//   const dummyResponse: WebSocketMessage = {
-			//     type: 'query_response',
-			//     requestId: queryMessage.requestId,
-			//     userId: userId,
-			//     data: dummyData,
-			//     timestamp: Date.now()
-			//   } as any;
-
-			// const runtime = this.connections.get(runtimeId);
-			// if (runtime) {
-			//   try {
-			//     runtime.socket.send(JSON.stringify(dummyResponse));
-			//     console.log(`Sent dummy data response to runtime ${runtimeId} for user ${userId}`);
-			//   } catch (error) {
-			//     console.error(`Failed to send dummy response to runtime:`, error);
-			//   }
-			// }
-
+			// this.sendError(
+			// 	runtimeId,
+			// 	`No data agent connected for user ${projectId}`,
+			// 	queryMessage.requestId
+			// );
 			// return;
+
+			 console.log(`No data agent for proect ${projectId}`);
+
+			  // Generate dummy data based on the query
+			  const dummyData = this.generateDummyData(queryMessage.query, projectId);
+
+			  // Send dummy response back to runtime
+			  const dummyResponse: WebSocketMessage = {
+			    type: 'query_response',
+			    requestId: queryMessage.requestId,
+			    projectId: projectId,
+			    data: dummyData,
+			    timestamp: Date.now()
+			  } as any;
+
+			const runtime = this.connections.get(runtimeId);
+			if (runtime) {
+			  try {
+			    runtime.socket.send(JSON.stringify(dummyResponse));
+			    console.log(`Sent dummy data response to runtime ${runtimeId} for project ${projectId}`);
+			  } catch (error) {
+			    console.error(`Failed to send dummy response to runtime:`, error);
+			  }
+			}
+
+			return;
 		}
 
 		// Add runtime ID for response routing
@@ -296,37 +296,37 @@ export class WebSocketBridge implements DurableObject {
 		const userDataAgent = this.findUserDataAgent(projectId);
 
 		if (!userDataAgent) {
-			// console.log(`No data agent for user ${userId}, returning dummy docs for testing`);
+			console.log(`No data agent for project ${projectId}, returning dummy docs for testing`);
 
-			// // Generate dummy docs data
-			// const dummyDocs = this.generateDummyDocs(userId);
+			// Generate dummy docs data
+			const dummyDocs = this.generateDummyDocs(projectId);
 
-			// // Send dummy response back to runtime
-			// const dummyResponse: DocsMessage = {
-			// 	type: 'docs',
-			// 	requestId: docsRequest.requestId,
-			// 	userId: userId,
-			// 	data: dummyDocs,
-			// 	timestamp: Date.now()
-			// };
+			// Send dummy response back to runtime
+			const dummyResponse: DocsMessage = {
+				type: 'docs',
+				requestId: docsRequest.requestId,
+				projectId: projectId,
+				data: dummyDocs,
+				timestamp: Date.now()
+			};
 
-			// const runtime = this.connections.get(runtimeId);
-			// if (runtime) {
-			// 	try {
-			// 		runtime.socket.send(JSON.stringify(dummyResponse));
-			// 		console.log(`Sent dummy docs response to runtime ${runtimeId} for user ${userId}`);
-			// 	} catch (error) {
-			// 		console.error(`Failed to send dummy docs response to runtime:`, error);
-			// 	}
-			// }
-			// return;
-
-			this.sendError(
-				runtimeId,
-				`No data agent connected for project ${projectId}`,
-				docsRequest.requestId
-			);
+			const runtime = this.connections.get(runtimeId);
+			if (runtime) {
+				try {
+					runtime.socket.send(JSON.stringify(dummyResponse));
+					console.log(`Sent dummy docs response to runtime ${runtimeId} for project ${projectId}`);
+				} catch (error) {
+					console.error(`Failed to send dummy docs response to runtime:`, error);
+				}
+			}
 			return;
+
+			// this.sendError(
+			// 	runtimeId,
+			// 	`No data agent connected for project ${projectId}`,
+			// 	docsRequest.requestId
+			// );
+			// return;
 		}
 
 		// Forward docs request to data agent
@@ -381,9 +381,9 @@ export class WebSocketBridge implements DurableObject {
 	}
 
 	// NEW: Generate dummy docs data for testing
-	private generateDummyDocs(userId?: string): any {
+	private generateDummyDocs(projectId?: string): any {
 		return {
-			databaseName: `user_${userId}_database`,
+			databaseName: `project_${projectId}_database`,
 			version: '1.0.0',
 			documentation: 'Database documentation for project',
 			tables: {
@@ -456,7 +456,7 @@ export class WebSocketBridge implements DurableObject {
 		};
 	}
 
-	private generateDummyData(query: string, userId: string): any {
+	private generateDummyData(query: string, projectId: string): any {
 		const queryLower = query.toLowerCase();
 
 		// Posts data
@@ -494,7 +494,7 @@ export class WebSocketBridge implements DurableObject {
 						id: "4",
 						title: "GraphQL Best Practices",
 						content: "GraphQL is a query language for APIs...",
-						author: { id: userId, name: "Current User" },
+						author: { id: projectId, name: "Current User" },
 						createdAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
 						published: false,
 						tags: ["graphql", "api", "best-practices"]
@@ -544,7 +544,7 @@ export class WebSocketBridge implements DurableObject {
 						status: "inactive"
 					},
 					{
-						id: userId,
+						id: projectId,
 						name: "Current User",
 						email: "current@example.com",
 						role: "user",
@@ -562,7 +562,7 @@ export class WebSocketBridge implements DurableObject {
 				orders: [
 					{
 						id: "order1",
-						userId: userId,
+						userId: projectId,
 						user: { name: "Current User" },
 						total: 149.99,
 						status: "completed",
@@ -604,14 +604,14 @@ export class WebSocketBridge implements DurableObject {
 					{
 						id: "event1",
 						event: "page_view",
-						userId: userId,
+						userId: projectId,
 						metadata: { page: "/dashboard", referrer: "google.com" },
 						timestamp: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString()
 					},
 					{
 						id: "event2",
 						event: "button_click",
-						userId: userId,
+						userId:projectId,
 						metadata: { button: "create_post", page: "/editor" },
 						timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
 					},
@@ -637,7 +637,7 @@ export class WebSocketBridge implements DurableObject {
 		return {
 			message: "Dummy data response",
 			query: query,
-			userId: userId,
+			projectId: projectId,
 			timestamp: new Date().toISOString(),
 			note: "This is test data - no data agent connected"
 		};
