@@ -1,23 +1,28 @@
-name = "websocket-bridge"
+name = "user-websocket-bridge"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-02"
 compatibility_flags = ["nodejs_compat"]
 
-# Durable Object binding
+# Define the User-scoped WebSocket Bridge Durable Object
 [[durable_objects.bindings]]
-name = "WEBSOCKET_BRIDGE"
-class_name = "WebSocketBridge"
+name = "USER_WEBSOCKET_BRIDGE"
+class_name = "UserWebSocketBridge"
 
-# REQUIRED: Durable Object migration configuration
+# Migration for the Durable Object
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["WebSocketBridge"]
+new_classes = ["UserWebSocketBridge"]
 
+# Optional: Environment variables
+# [vars]
+# ENVIRONMENT = "production"
 
-# Optional: Add environment variables
-[vars]
-# Add any environment variables here if needed
+# Optional: KV namespaces (if you need them later)
+# [[kv_namespaces]]
+# binding = "MY_KV"
+# id = "your-kv-namespace-id"
 
-# Optional: Add secrets using wrangler secret put <name>
-# [secrets]
-# SECRET_KEY = "your_secret_here"
+# Optional: R2 buckets (if you need them later)
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "your-bucket-name"
