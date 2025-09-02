@@ -11,7 +11,7 @@ class_name = "UserWebSocketBridge"
 # Migration for the Durable Object
 [[migrations]]
 tag = "v1"
-new_classes = ["UserWebSocketBridge"]
+new_sqlite_classes = ["UserWebSocketBridge"]
 
 # Optional: Environment variables
 # [vars]
