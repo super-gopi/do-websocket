@@ -18,12 +18,36 @@ export class UserWebSocketBridge implements DurableObject {
 		private env: Env
 	) {
 		this.lastActivity = Date.now();
+
 		// Extract projectId from the Durable Object name
-		this.projectId = this.state.id.name!;
+		this.projectId = this.state.id.name || 'unknown';
+
+		if (!this.state.id.name) {
+			console.error('DO Constructor: CRITICAL - state.id.name is undefined!');
+		}
 	}
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
+		console.log(`DO ${this.projectId}: ${request.method} ${url.pathname}${url.search}`);
+
+		// CRITICAL FIX: If projectId is unknown, extract it from the request
+		if (this.projectId === 'unknown' || !this.projectId || this.projectId === 'undefined') {
+			const urlProjectId = url.searchParams.get('projectId');
+			const headerProjectId = request.headers.get('X-Project-Id');
+
+			console.log(`DO: Attempting fallback projectId detection - URL: "${urlProjectId}", Header: "${headerProjectId}"`);
+
+			if (urlProjectId) {
+				// console.log(`DO: FIXED - Using projectId from URL: "${urlProjectId}"`);
+				this.projectId = urlProjectId;
+			} else if (headerProjectId) {
+				// console.log(`DO: FIXED - Using projectId from header: "${headerProjectId}"`);
+				this.projectId = headerProjectId;
+			} else {
+				console.error('DO: FAILED - Could not determine projectId from request');
+			}
+		}
 
 		if (url.pathname === '/websocket') {
 			return this.handleWebSocketUpgrade(request);
@@ -50,177 +74,251 @@ export class UserWebSocketBridge implements DurableObject {
 	}
 
 	private async handleWebSocketUpgrade(request: Request): Promise<Response> {
+
+		const url = new URL(request.url);
 		const upgradeHeader = request.headers.get('Upgrade');
-		if (!upgradeHeader || upgradeHeader !== 'websocket') {
+
+		if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+			console.error(`DO ${this.projectId}: Invalid Upgrade header: ${upgradeHeader}`);
 			return new Response('Expected Upgrade: websocket', { status: 426 });
 		}
 
-		const webSocketPair = new WebSocketPair();
-		const [client, server] = Object.values(webSocketPair);
-
-		server.accept();
-
-		const url = new URL(request.url);
 		const clientType = url.searchParams.get('type') as ClientType;
 		const requestProjectId = url.searchParams.get('projectId');
 
-		// Validate required parameters
+		console.log(`DO ${this.projectId}: Params - type: ${clientType}, projectId: ${requestProjectId}`);
+
+		// Validate client type
 		if (!clientType || !['runtime', 'agent'].includes(clientType)) {
-			server.close(1008, 'Invalid client type. Use ?type=runtime or ?type=agent');
-			return new Response('Invalid client type', { status: 400 });
+			console.error(`DO ${this.projectId}: Invalid client type: ${clientType}`);
+			return new Response(JSON.stringify({
+				error: 'Invalid client type. Use ?type=runtime or ?type=agent',
+				received: clientType,
+				valid: ['runtime', 'agent']
+			}), {
+				status: 400,
+				headers: { 'Content-Type': 'application/json' }
+			});
 		}
 
-		// Ensure projectId matches this Durable Object's projectId
-		if (requestProjectId !== this.projectId) {
-			server.close(1008, 'Project ID mismatch');
-			return new Response('Project ID mismatch', { status: 400 });
+		// Validate projectId
+		if (!requestProjectId) {
+			console.error(`DO ${this.projectId}: Missing projectId`);
+			return new Response(JSON.stringify({
+				error: 'Missing projectId parameter',
+				example: '?type=runtime&projectId=your-project-id'
+			}), {
+				status: 400,
+				headers: { 'Content-Type': 'application/json' }
+			});
 		}
 
-		const clientId = crypto.randomUUID();
+		// RELAXED CHECK: Since we have the fallback logic, just ensure we have a projectId
+		if (!this.projectId || this.projectId === 'unknown' || this.projectId === 'undefined') {
+			console.error(`DO: Still no valid projectId after fallback. Current: "${this.projectId}", Requested: "${requestProjectId}"`);
+			return new Response(JSON.stringify({
+				error: 'Unable to determine project ID',
+				doProjectId: this.projectId,
+				requestProjectId: requestProjectId
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
 
-		// Store connection
-		const connection: Connection = {
-			id: clientId,
-			type: clientType,
-			socket: server,
-			connectedAt: Date.now(),
-			projectId: this.projectId,
-			metadata: {
-				userAgent: request.headers.get('User-Agent'),
-				origin: request.headers.get('Origin')
+
+		try {
+			// Create WebSocket pair
+			const webSocketPair = new WebSocketPair();
+			const [client, server] = Object.values(webSocketPair);
+
+			// Accept the WebSocket connection
+			server.accept();
+
+			const clientId = crypto.randomUUID();
+
+			// Create connection object
+			const connection: Connection = {
+				id: clientId,
+				type: clientType,
+				socket: server,
+				connectedAt: Date.now(),
+				projectId: this.projectId,
+				metadata: {
+					userAgent: request.headers.get('User-Agent'),
+					origin: request.headers.get('Origin')
+				}
+			};
+
+			// Store connection based on type
+			if (clientType === 'runtime') {
+				if (this.runtime) {
+					try {
+						this.runtime.socket.close(1000, 'New runtime connection');
+					} catch (e) {
+						console.warn(`DO ${this.projectId}: Error closing old runtime:`, e);
+					}
+				}
+				this.runtime = connection;
+			} else if (clientType === 'agent') {
+				this.agents.set(clientId, connection);
 			}
-		};
 
-		// Store connection based on type
-		if (clientType === 'runtime') {
-			// Close existing runtime connection if any
-			if (this.runtime) {
-				this.runtime.socket.close(1000, 'New runtime connection');
+			this.lastActivity = Date.now();
+
+			// ENHANCED EVENT LISTENERS WITH COMPREHENSIVE LOGGING
+			server.addEventListener('message', (event: MessageEvent) => {
+				console.log(`DO ${this.projectId}: *** RAW MESSAGE EVENT RECEIVED ***  Event type: ${event.type} From ${clientType} (${clientId})`);
+
+				try {
+					this.handleMessage(clientId, event.data as string);
+				} catch (error: any) {
+					console.error(`DO ${this.projectId}: CRITICAL ERROR in message event handler:`, error);
+				}
+			});
+
+			server.addEventListener('close', (event) => {
+				console.log(`DO ${this.projectId}: ${clientType} (${clientId}) closed: ${event.code} - ${event.reason}`);
+				this.handleDisconnection(clientId, clientType);
+			});
+
+			server.addEventListener('error', (event: Event) => {
+				console.error(`DO ${this.projectId}: WebSocket error for ${clientType} (${clientId}):`, event);
+				this.handleDisconnection(clientId, clientType);
+			});
+
+			// Send welcome message
+			const welcomeMessage: WebSocketMessage = {
+				type: 'connected',
+				clientId: clientId,
+				clientType: clientType,
+				projectId: this.projectId,
+				message: `Connected as ${clientType} for project ${this.projectId}`,
+				timestamp: Date.now()
+			};
+
+
+			try {
+				const messageStr = JSON.stringify(welcomeMessage);
+				server.send(messageStr);
+			} catch (error: any) {
+				console.error(`DO ${this.projectId}: FAILED to send welcome message:`, error);
+				return new Response(JSON.stringify({
+					error: 'Failed to send welcome message',
+					details: error.message
+				}), {
+					status: 500,
+					headers: { 'Content-Type': 'application/json' }
+				});
 			}
-			this.runtime = connection;
-		} else if (clientType === 'agent') {
-			this.agents.set(clientId, connection);
+
+
+			return new Response(null, {
+				status: 101,
+				webSocket: client
+			});
+
+		} catch (error: any) {
+			console.error(`DO ${this.projectId}: WebSocket upgrade error:`, error);
+			return new Response(JSON.stringify({
+				error: 'WebSocket upgrade failed',
+				details: error.message,
+				projectId: this.projectId
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
 		}
-
-		this.lastActivity = Date.now();
-
-		console.log(`${clientType} connected for project ${this.projectId} with ID: ${clientId}`);
-
-		// Set up event listeners
-		server.addEventListener('message', (event: MessageEvent) => {
-			this.handleMessage(clientId, event.data as string);
-		});
-
-		server.addEventListener('close', () => {
-			this.handleDisconnection(clientId, clientType);
-		});
-
-		server.addEventListener('error', (event: Event) => {
-			console.error(`WebSocket error for ${clientType} (${clientId}):`, event.type);
-			this.handleDisconnection(clientId, clientType);
-		});
-
-		// Send welcome message
-		const welcomeMessage: WebSocketMessage = {
-			type: 'connected',
-			clientId: clientId,
-			clientType: clientType,
-			projectId: this.projectId,
-			message: `Connected as ${clientType} for project ${this.projectId}`,
-			timestamp: Date.now()
-		};
-
-		server.send(JSON.stringify(welcomeMessage));
-
-		return new Response(null, {
-			status: 101,
-			webSocket: client
-		});
 	}
 
 	private handleDisconnection(clientId: string, clientType: ClientType): void {
-		console.log(`${clientType} (${clientId}) for project ${this.projectId} disconnected`);
+		console.log(`DO ${this.projectId}: *** HANDLING DISCONNECTION *** Client: ${clientType} (${clientId})`);
 
 		if (clientType === 'runtime') {
 			this.runtime = null;
 		} else if (clientType === 'agent') {
-			this.agents.delete(clientId);
+			const wasDeleted = this.agents.delete(clientId);
 		}
 
 		this.lastActivity = Date.now();
-
-		// Optional: Set an alarm to clean up this DO if inactive
 		this.scheduleCleanupIfEmpty();
+
 	}
 
 	private async scheduleCleanupIfEmpty(): Promise<void> {
-		// If no connections left, schedule cleanup after 5 minutes
 		if (!this.runtime && this.agents.size === 0) {
-			const cleanupTime = Date.now() + 5 * 60 * 1000; // 5 minutes
+			const cleanupTime = Date.now() + 5 * 60 * 1000;
 			await this.state.storage.setAlarm(cleanupTime);
 		} else {
-			// Cancel any existing alarm if we have active connections
 			await this.state.storage.deleteAlarm();
 		}
 	}
 
 	async alarm(): Promise<void> {
-		// Clean up if still empty after alarm fires
 		if (!this.runtime && this.agents.size === 0) {
-			console.log(`Cleaning up empty Durable Object for project ${this.projectId}`);
-			// The DO will naturally be garbage collected after this
+			console.log(`DO ${this.projectId}: Alarm triggered - cleaning up empty DO`);
 		}
 	}
 
 	private async handleMessage(senderId: string, message: string): Promise<void> {
+
+		if (!message || typeof message !== 'string') {
+			console.error(`DO ${this.projectId}: Invalid message - not a string or empty`);
+			this.sendError(senderId, 'Invalid message format');
+			return;
+		}
+
 		try {
 			const data: WebSocketMessage = JSON.parse(message);
-			this.lastActivity = Date.now();
 
-			console.log(`Message from ${data.type || 'unknown'} (${senderId}) for project ${this.projectId}:`, data.type);
+			console.log(`DO ${this.projectId}: Parsed message:`, JSON.stringify(data, null, 2));
+
+			this.lastActivity = Date.now();
+			// Log current connection state
 
 			switch (data.type) {
 				case 'graphql_query':
 					await this.forwardToDataAgent(senderId, data);
 					break;
-
 				case 'get_docs':
 					await this.forwardGetDocsToAgent(senderId, data);
 					break;
-
 				case 'docs':
 					await this.forwardDocsToRuntime(senderId, data);
 					break;
-
 				case 'query_response':
 					await this.forwardToRuntime(senderId, data);
 					break;
-
 				case 'ping':
 					this.handlePing(senderId);
 					break;
-
 				default:
-					console.warn(`Unknown message type: ${data.type}`);
 					this.sendError(senderId, `Unknown message type: ${data.type}`);
 			}
 
-		} catch (error) {
-			console.error(`Error handling message from ${senderId}:`, error);
-			this.sendError(senderId, 'Failed to process message');
+
+		} catch (parseError: any) {
+			console.error(`DO ${this.projectId}: Parse error message:`, parseError.message, JSON.stringify(message, null, 2));
+			this.sendError(senderId, 'Invalid JSON message format');
 		}
 	}
 
 	private async forwardToDataAgent(runtimeId: string, data: WebSocketMessage): Promise<void> {
-		if (data.type !== 'graphql_query') return;
 
-		const queryMessage = data as any; // GraphQLQueryMessage
 
-		// Get any available agent (or implement load balancing)
+		if (data.type !== 'graphql_query') {
+			console.error(`DO ${this.projectId}: Message type is not graphql_query (${data.type}), returning`);
+			return;
+		}
+
+		const queryMessage = data as any;
+		
+
 		const agent = this.getAvailableAgent();
+		
 
 		if (!agent) {
-			console.log(`No data agent for project ${this.projectId}, using dummy data`);
+			console.log(`DO ${this.projectId}: *** NO AGENT AVAILABLE - GENERATING DUMMY DATA ***`);
 
 			const dummyData = this.generateDummyData(queryMessage.query, this.projectId);
 
@@ -232,43 +330,49 @@ export class UserWebSocketBridge implements DurableObject {
 				timestamp: Date.now()
 			} as any;
 
+
 			if (this.runtime) {
 				try {
-					this.runtime.socket.send(JSON.stringify(dummyResponse));
-					console.log(`Sent dummy data response to runtime for project ${this.projectId}`);
-				} catch (error) {
-					console.error(`Failed to send dummy response to runtime:`, error);
+					const responseStr = JSON.stringify(dummyResponse);
+					this.runtime.socket.send(responseStr);
+					console.log(`DO ${this.projectId}: *** DUMMY DATA SENT SUCCESSFULLY TO RUNTIME ***`);
+				} catch (error: any) {
+					console.error(`DO ${this.projectId}: Send error details:`, error.message);
 				}
+			} else {
+				console.error(`DO ${this.projectId}: Runtime connection is null - this should not happen!`);
 			}
 			return;
 		}
 
-		// Forward to agent
-		const forwardMessage = {
-			...queryMessage,
-			runtimeId: runtimeId
-		};
+		const forwardMessage = { ...queryMessage, runtimeId: runtimeId };
 
 		try {
-			agent.socket.send(JSON.stringify(forwardMessage));
-			console.log(`Forwarded GraphQL query to agent ${agent.id} for project ${this.projectId}`);
-		} catch (error) {
-			console.error(`Failed to forward message to data agent:`, error);
+			const forwardStr = JSON.stringify(forwardMessage);
+			agent.socket.send(forwardStr);
+			console.log(`DO ${this.projectId}: *** MESSAGE FORWARDED SUCCESSFULLY TO AGENT ***`);
+		} catch (error: any) {
+			console.error(`DO ${this.projectId}: Forward error details:`, error.message);
 			this.sendError(runtimeId, `Failed to forward message to data agent`, queryMessage.requestId);
 		}
 	}
 
 	private async forwardGetDocsToAgent(runtimeId: string, data: WebSocketMessage): Promise<void> {
-		if (data.type !== 'get_docs') return;
+		console.log(`DO ${this.projectId}: *** ENTERING forwardGetDocsToAgent ***`);
+
+		if (data.type !== 'get_docs') {
+			console.error(`DO ${this.projectId}: Message type is not get_docs (${data.type}), returning`);
+			return;
+		}
 
 		const docsRequest = data as GetDocsMessage;
 		const agent = this.getAvailableAgent();
 
+
 		if (!agent) {
-			console.log(`No data agent for project ${this.projectId}, returning dummy docs`);
+			console.log(`DO ${this.projectId}: *** NO AGENT FOR DOCS - RETURNING DUMMY DOCS ***`);
 
 			const dummyDocs = this.generateDummyDocs(this.projectId);
-
 			const dummyResponse: DocsMessage = {
 				type: 'docs',
 				requestId: docsRequest.requestId,
@@ -280,99 +384,137 @@ export class UserWebSocketBridge implements DurableObject {
 			if (this.runtime) {
 				try {
 					this.runtime.socket.send(JSON.stringify(dummyResponse));
-					console.log(`Sent dummy docs response to runtime for project ${this.projectId}`);
+					console.log(`DO ${this.projectId}: *** DUMMY DOCS SENT TO RUNTIME ***`);
 				} catch (error) {
-					console.error(`Failed to send dummy docs response:`, error);
+					console.error(`DO ${this.projectId}: Failed to send dummy docs:`, error);
 				}
+			} else {
+				console.error(`DO ${this.projectId}: No runtime connection for docs response`);
 			}
 			return;
 		}
 
-		// Forward docs request to agent
-		const forwardMessage: GetDocsMessage = {
-			...docsRequest,
-			runtimeId: runtimeId
-		} as any;
-
+		const forwardMessage: GetDocsMessage = { ...docsRequest, runtimeId: runtimeId } as any;
 		try {
 			agent.socket.send(JSON.stringify(forwardMessage));
-			console.log(`Forwarded docs request to agent ${agent.id} for project ${this.projectId}`);
+			console.log(`DO ${this.projectId}: *** DOCS REQUEST FORWARDED TO AGENT ***`);
 		} catch (error) {
-			console.error(`Failed to forward docs request to agent:`, error);
+			console.error(`DO ${this.projectId}: Failed to forward docs request:`, error);
 			this.sendError(runtimeId, `Failed to forward docs request`, docsRequest.requestId);
 		}
 	}
 
 	private async forwardDocsToRuntime(agentId: string, data: WebSocketMessage): Promise<void> {
-		if (data.type !== 'docs' || !this.runtime) return;
+		console.log(`DO ${this.projectId}: *** ENTERING forwardDocsToRuntime ***`);
 
-		const response = data as DocsMessage;
+		if (data.type !== 'docs') {
+			console.error(`DO ${this.projectId}: Message type is not docs (${data.type}), returning`);
+			return;
+		}
+
+		if (!this.runtime) {
+			console.warn(`DO ${this.projectId}: No runtime connection, ignoring docs from agent ${agentId}`);
+			return;
+		}
 
 		try {
-			this.runtime.socket.send(JSON.stringify(response));
-			console.log(`Forwarded docs response from agent ${agentId} to runtime for project ${this.projectId}`);
+			this.runtime.socket.send(JSON.stringify(data));
+			console.log(`DO ${this.projectId}: *** DOCS FORWARDED TO RUNTIME ***`);
 		} catch (error) {
-			console.error(`Failed to forward docs response to runtime:`, error);
+			console.error(`DO ${this.projectId}: Failed to forward docs to runtime:`, error);
 		}
 	}
 
 	private async forwardToRuntime(agentId: string, data: WebSocketMessage): Promise<void> {
-		if (data.type !== 'query_response' || !this.runtime) return;
+		console.log(`DO ${this.projectId}: *** ENTERING forwardToRuntime ***`);
 
-		const response = data as any; // QueryResponseMessage
+		if (data.type !== 'query_response') {
+			console.error(`DO ${this.projectId}: Message type is not query_response (${data.type}), returning`);
+			return;
+		}
+
+		if (!this.runtime) {
+			console.warn(`DO ${this.projectId}: This query response will be lost: ${(data as any).requestId}`);
+			return;
+		}
 
 		try {
-			this.runtime.socket.send(JSON.stringify(response));
-			console.log(`Forwarded query response from agent ${agentId} to runtime for project ${this.projectId}`);
-		} catch (error) {
-			console.error(`Failed to forward response to runtime:`, error);
+			const responseStr = JSON.stringify(data);
+			this.runtime.socket.send(responseStr);
+			console.log(`DO ${this.projectId}: *** QUERY RESPONSE FORWARDED TO RUNTIME SUCCESSFULLY ***`);
+		} catch (error: any) {
+			console.error(`DO ${this.projectId}: FAILED to forward query response to runtime:`, error);
 		}
 	}
 
 	private getAvailableAgent(): Connection | null {
-		if (this.agents.size === 0) return null;
+		const agentCount = this.agents.size;
 
-		// Return the first agent (or implement load balancing later)
-		return Array.from(this.agents.values())[0];
+		if (agentCount === 0) {
+			console.log(`DO ${this.projectId}: No agents available`);
+			return null;
+		}
+
+		const agents = Array.from(this.agents.values());
+		const selectedAgent = agents[0];
+
+		return selectedAgent;
 	}
 
 	private handlePing(senderId: string): void {
-		const connection = this.findConnection(senderId);
-		if (!connection) return;
 
-		const pongMessage: WebSocketMessage = {
-			type: 'pong',
-			timestamp: Date.now()
-		};
+		const connection = this.findConnection(senderId);
+		if (!connection) {
+			console.error(`DO ${this.projectId}: No connection found for ping sender: ${senderId}`);
+			return;
+		}
 
 		try {
+			const pongMessage = { type: 'pong', timestamp: Date.now() };
 			connection.socket.send(JSON.stringify(pongMessage));
 		} catch (error) {
-			console.error(`Failed to send pong to ${senderId}:`, error);
+			console.error(`DO ${this.projectId}: Failed to send pong:`, error);
 		}
 	}
 
 	private findConnection(clientId: string): Connection | null {
-		if (this.runtime?.id === clientId) return this.runtime;
-		return this.agents.get(clientId) || null;
+	
+		if (this.runtime?.id === clientId) {
+			console.log(`DO ${this.projectId}: Found runtime connection`);
+			return this.runtime;
+		}
+
+		const agent = this.agents.get(clientId);
+		if (agent) {
+			console.log(`DO ${this.projectId}: Found agent connection`);
+			return agent;
+		}
+
+		return null;
 	}
 
 	private sendError(clientId: string, message: string, requestId?: string): void {
-		const connection = this.findConnection(clientId);
-		if (!connection) return;
+		console.log(`DO ${this.projectId}: *** SENDING ERROR to ${clientId} ***`);
 
-		const errorMessage: WebSocketMessage = {
-			type: 'error',
-			message,
-			requestId,
-			projectId: this.projectId,
-			timestamp: Date.now()
-		};
+		const connection = this.findConnection(clientId);
+		if (!connection) {
+			console.error(`DO ${this.projectId}: Cannot send error - no connection for client: ${clientId}`);
+			return;
+		}
 
 		try {
+			const errorMessage = {
+				type: 'error',
+				message,
+				requestId,
+				projectId: this.projectId,
+				timestamp: Date.now()
+			};
+
 			connection.socket.send(JSON.stringify(errorMessage));
+			console.log(`DO ${this.projectId}: *** ERROR SENT SUCCESSFULLY ***`);
 		} catch (error) {
-			console.error(`Failed to send error message to ${clientId}:`, error);
+			console.error(`DO ${this.projectId}: Failed to send error message:`, error);
 		}
 	}
 
@@ -398,147 +540,85 @@ export class UserWebSocketBridge implements DurableObject {
 		};
 
 		return new Response(JSON.stringify(status, null, 2), {
-			headers: {
-				'Content-Type': 'application/json',
-				'Access-Control-Allow-Origin': '*'
-			}
+			headers: { 'Content-Type': 'application/json' }
 		});
 	}
 
 	private generateDummyData(query: string, projectId: string): any {
+
 		const queryLower = query.toLowerCase();
 
-		// Posts data
-		if (queryLower.includes('posts')) {
-			return {
-				posts: [
-					{
-						id: "1",
-						title: "Getting Started with Next.js",
-						content: "Next.js is a powerful React framework...",
-						author: { id: "user1", name: "John Doe" },
-						createdAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-						published: true,
-						tags: ["nextjs", "react", "tutorial"]
-					},
-					{
-						id: "2",
-						title: "Understanding WebSockets",
-						content: "WebSockets provide real-time communication...",
-						author: { id: "user2", name: "Jane Smith" },
-						createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-						published: true,
-						tags: ["websockets", "realtime", "tutorial"]
-					},
-					{
-						id: "3",
-						title: "Durable Objects Explained",
-						content: "Cloudflare Durable Objects are a new way...",
-						author: { id: "user3", name: "Bob Wilson" },
-						createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-						published: true,
-						tags: ["cloudflare", "durable-objects", "serverless"]
-					},
-					{
-						id: "4",
-						title: "GraphQL Best Practices",
-						content: "GraphQL is a query language for APIs...",
-						author: { id: projectId, name: "Current User" },
-						createdAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
-						published: false,
-						tags: ["graphql", "api", "best-practices"]
-					}
-				]
-			};
-		}
-
-		// Users data
-		if (queryLower.includes('users')) {
-			return {
+		if (queryLower.includes('users') || queryLower.includes('user')) {
+			const userData = {
 				users: [
-					{
-						id: "user1",
-						name: "John Doe",
-						email: "john@example.com",
-						role: "admin",
-						createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-						avatar: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face",
-						status: "active"
-					},
-					{
-						id: "user2",
-						name: "Jane Smith",
-						email: "jane@example.com",
-						role: "editor",
-						createdAt: new Date(Date.now() - 25 * 24 * 60 * 60 * 1000).toISOString(),
-						avatar: "https://images.unsplash.com/photo-1494790108755-2616b612e2c0?w=100&h=100&fit=crop&crop=face",
-						status: "active"
-					},
-					{
-						id: projectId,
-						name: "Current User",
-						email: "current@example.com",
-						role: "user",
-						createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
-						avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop&crop=face",
-						status: "active"
-					}
+					{ id: "1", name: "John Doe", email: "john@example.com", role: "admin", status: "active" },
+					{ id: "2", name: "Jane Smith", email: "jane@example.com", role: "user", status: "active" },
+					{ id: "3", name: "Bob Wilson", email: "bob@example.com", role: "user", status: "inactive" }
 				]
 			};
+
+			return userData;
 		}
 
-		// Default fallback
-		return {
+		if (queryLower.includes('posts') || queryLower.includes('post')) {
+			const postData = {
+				posts: [
+					{ id: "1", title: "Getting Started with WebSockets", author: { name: "John Doe" } },
+					{ id: "2", title: "Durable Objects Explained", author: { name: "Jane Smith" } },
+					{ id: "3", title: "Building Real-time Applications", author: { name: "Bob Wilson" } }
+				]
+			};
+
+			return postData;
+		}
+
+		const defaultData = {
 			message: "Dummy data response",
-			query: query,
-			projectId: projectId,
-			timestamp: new Date().toISOString(),
-			note: "This is test data - no data agent connected"
+			query,
+			projectId,
+			timestamp: new Date().toISOString()
 		};
+
+		return defaultData;
 	}
 
 	private generateDummyDocs(projectId: string): any {
+
 		return {
 			databaseName: `project_${projectId}_database`,
 			version: '1.0.0',
-			documentation: 'Database documentation for project',
 			tables: {
 				users: {
 					description: 'User accounts and profiles',
 					columns: {
-						id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique user identifier' },
-						email: { type: 'VARCHAR(255)', required: true, unique: true, description: 'User email address' },
+						id: { type: 'UUID', primaryKey: true, description: 'Unique user identifier' },
 						name: { type: 'VARCHAR(100)', required: true, description: 'User full name' },
-						role: { type: 'VARCHAR(50)', required: false, default: 'user', description: 'User role' },
-						created_at: { type: 'TIMESTAMP', required: true, description: 'Account creation time' },
-						updated_at: { type: 'TIMESTAMP', required: true, description: 'Last update time' }
-					},
-					relationships: {
-						posts: { type: 'one-to-many', table: 'posts', foreignKey: 'author_id' },
-						comments: { type: 'one-to-many', table: 'comments', foreignKey: 'author_id' }
+						email: { type: 'VARCHAR(255)', unique: true, description: 'User email address' },
+						role: { type: 'VARCHAR(50)', default: 'user', description: 'User role' },
+						status: { type: 'VARCHAR(20)', default: 'active', description: 'User status' },
+						created_at: { type: 'TIMESTAMP', required: true, description: 'Account creation time' }
 					}
 				},
 				posts: {
 					description: 'Blog posts and articles',
 					columns: {
-						id: { type: 'UUID', required: true, primaryKey: true, description: 'Unique post identifier' },
+						id: { type: 'UUID', primaryKey: true, description: 'Unique post identifier' },
 						title: { type: 'VARCHAR(200)', required: true, description: 'Post title' },
-						content: { type: 'TEXT', required: false, description: 'Post content body' },
-						author_id: { type: 'UUID', required: true, foreignKey: 'users.id', description: 'Reference to post author' },
-						published: { type: 'BOOLEAN', required: true, default: false, description: 'Whether post is published' },
-						created_at: { type: 'TIMESTAMP', required: true, description: 'Post creation time' }
-					},
-					relationships: {
-						author: { type: 'belongs-to', table: 'users', foreignKey: 'author_id' },
-						comments: { type: 'one-to-many', table: 'comments', foreignKey: 'post_id' }
+						content: { type: 'TEXT', description: 'Post content' },
+						author_id: { type: 'UUID', required: true, description: 'Reference to author' },
+						published: { type: 'BOOLEAN', default: false, description: 'Publication status' },
+						created_at: { type: 'TIMESTAMP', required: true, description: 'Creation time' }
 					}
 				}
 			},
+			relationships: {
+				users_posts: 'users.id -> posts.author_id'
+			},
 			metadata: {
-				lastUpdated: new Date().toISOString(),
 				totalTables: 2,
 				totalColumns: 11,
-				fetchedAt: new Date().toISOString()
+				generatedAt: new Date().toISOString(),
+				note: 'This is dummy documentation for testing purposes'
 			}
 		};
 	}

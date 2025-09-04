@@ -55,7 +55,7 @@ npm run deploy
 ### Connecting Runtime Client
 
 ```javascript
-const ws = new WebSocket('wss://your-worker.your-subdomain.workers.dev/websocket?type=runtime&projectId=user123');
+const ws = new WebSocket('wss://user-websocket-bridge.ashish-91e.workers.dev/websocket?type=runtime&projectId=user123');
 
 ws.onopen = () => {
   console.log('Runtime connected');
@@ -70,7 +70,7 @@ ws.onmessage = (event) => {
 ### Connecting Data Agent
 
 ```javascript
-const ws = new WebSocket('wss://your-worker.your-subdomain.workers.dev/websocket?type=agent&projectId=user123');
+const ws = new WebSocket('wss://user-websocket-bridge.ashish-91e.workers.dev/websocket?type=agent&projectId=user123');
 
 ws.onopen = () => {
   console.log('Agent connected');
@@ -78,10 +78,7 @@ ws.onopen = () => {
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
-  if (data.type === 'graphql_query') {
-    // Process GraphQL query
-    // Send back query_response
-  }
+ console.log('received message:', data);
 };
 ```
 

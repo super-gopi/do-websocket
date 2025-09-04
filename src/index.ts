@@ -1,33 +1,107 @@
-import { UserWebSocketBridge } from './websocket-bridge';
-import { Env } from './types';
+// Alternative approach: Pass projectId in the request to the DO
+export { UserWebSocketBridge } from './websocket-bridge';
 
-// Export the Durable Object class
-export { UserWebSocketBridge };
+export interface Env {
+  USER_WEBSOCKET_BRIDGE: DurableObjectNamespace;
+}
 
-// Main Worker - Routes requests to user-specific Durable Objects
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
-		const url = new URL(request.url);
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+        
+    // Add CORS headers for all responses
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    };
 
-		// Extract projectId from URL parameters
-		const projectId = url.searchParams.get('projectId');
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+    
+    // Extract projectId from URL parameters
+    const projectId = url.searchParams.get('projectId');
+    
+    
+    if (!projectId) {
+      console.error('Worker: Missing projectId parameter');
+      return new Response(JSON.stringify({
+        error: 'Missing projectId parameter',
+        message: 'Please provide ?projectId=your-project-id in the URL',
+        receivedUrl: url.toString()
+      }), { 
+        status: 400,
+        headers: { 
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
+      });
+    }
+        
+    try {
+      // Create a Durable Object ID based on the projectId
+      const durableObjectId = env.USER_WEBSOCKET_BRIDGE.idFromName(projectId);
+      const durableObjectStub = env.USER_WEBSOCKET_BRIDGE.get(durableObjectId);
+      
+      
+      // Create a new request with projectId in headers as backup
 
-		if (!projectId) {
-			return new Response(JSON.stringify({
-				error: 'Missing projectId parameter',
-				message: 'Please provide ?projectId=your-project-id in the URL'
-			}), {
-				status: 400,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
+      const headers = new Headers(request.headers);
+      headers.set("X-Project-Id", projectId);
 
-		// Create a Durable Object ID based on the projectId
-		// This ensures the same projectId always routes to the same DO instance
-		const durableObjectId = env.USER_WEBSOCKET_BRIDGE.idFromName(projectId);
-		const durableObjectStub = env.USER_WEBSOCKET_BRIDGE.get(durableObjectId);
-
-		// Forward the request to the user-specific Durable Object
-		return durableObjectStub.fetch(request);
-	}
+      const newRequest = new Request(request.url, {
+        method: request.method,
+        headers,
+        body: request.body
+      });
+      
+      // Forward the request to the user-specific Durable Object
+      const response = await durableObjectStub.fetch(newRequest);
+            
+      // Handle WebSocket upgrade responses (status 101) specially
+      if (response.status === 101) {
+        console.log(`Worker: WebSocket upgrade successful, returning response directly`);
+        // For WebSocket upgrades, return the response as-is
+        return response;
+      }
+      
+      // For non-WebSocket responses, add CORS headers
+      const responseHeaders = new Headers();
+      
+      // Copy existing headers
+      response.headers.forEach((value, key) => {
+        responseHeaders.set(key, value);
+      });
+      
+      // Add CORS headers
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        responseHeaders.set(key, value);
+      });
+      
+      const newResponse = new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders
+      });
+      
+      return newResponse;
+      
+    } catch (error:any) {
+      console.error(`Worker: Error routing to Durable Object for project "${projectId}":`, error);
+      
+      return new Response(JSON.stringify({
+        error: 'Failed to route to Durable Object',
+        projectId: projectId,
+        details: error.message
+      }), {
+        status: 500,
+        headers: { 
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
+      });
+    }
+  }
 };
