@@ -55,7 +55,7 @@ npm run deploy
 ### Connecting Runtime Client
 
 ```javascript
-const ws = new WebSocket('wss://user-websocket-bridge.ashish-91e.workers.dev/websocket?type=runtime&projectId=user123');
+const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=runtime&projectId=user123');
 
 ws.onopen = () => {
   console.log('Runtime connected');
@@ -70,7 +70,7 @@ ws.onmessage = (event) => {
 ### Connecting Data Agent
 
 ```javascript
-const ws = new WebSocket('wss://user-websocket-bridge.ashish-91e.workers.dev/websocket?type=agent&projectId=user123');
+const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=agent&projectId=user123');
 
 ws.onopen = () => {
   console.log('Agent connected');
@@ -105,7 +105,12 @@ const response = {
   type: 'query_response',
   requestId: 'req-123',
   projectId: 'user123',
-  data: { posts: [...] },
+  data: { 
+    posts: [
+      { id: "1", title: "Hello world" },
+      { id: "2", title: "Durable Objects are great" }
+    ]
+  },
   timestamp: Date.now()
 };
 

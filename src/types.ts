@@ -1,6 +1,6 @@
 // Environment bindings
 export interface Env {
-	USER_WEBSOCKET_BRIDGE: DurableObjectNamespace;
+	USER_WEBSOCKET: DurableObjectNamespace;
 }
 
 // Client types

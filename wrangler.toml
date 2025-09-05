@@ -1,17 +1,17 @@
-name = "user-websocket-bridge"
+name = "user-websocket"
 main = "src/index.ts"
 compatibility_date = "2024-09-02"
 compatibility_flags = ["nodejs_compat"]
 
 # Define the User-scoped WebSocket Bridge Durable Object
 [[durable_objects.bindings]]
-name = "USER_WEBSOCKET_BRIDGE"
-class_name = "UserWebSocketBridge"
+name = "USER_WEBSOCKET"
+class_name = "UserWebSocket"
 
 # Migration for the Durable Object
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["UserWebSocketBridge"]
+new_sqlite_classes = ["UserWebSocket"]
 
 # Optional: Environment variables
 # [vars]

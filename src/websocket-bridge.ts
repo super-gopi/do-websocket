@@ -7,25 +7,30 @@ import {
 	GetDocsMessage
 } from './types';
 
-export class UserWebSocketBridge implements DurableObject {
+
+export class UserWebSocket implements DurableObject {
+	private state: DurableObjectState;
+  	private env: Env;
 	private runtime: Connection | null = null;
 	private agents: Map<string, Connection> = new Map();
 	private projectId: string;
 	private lastActivity: number;
 
-	constructor(
-		private state: DurableObjectState,
-		private env: Env
-	) {
+	constructor(state: DurableObjectState,env: Env) {
+		this.state = state;
+    	this.env = env;
+
 		this.lastActivity = Date.now();
 
-		// Extract projectId from the Durable Object name
-		this.projectId = this.state.id.name || 'unknown';
+		 // Prefer the "name" if the DO was created with idFromName,
+		// otherwise fall back to the deterministic string form
+		this.projectId = this.state.id.name ?? this.state.id.toString();
 
-		if (!this.state.id.name) {
-			console.error('DO Constructor: CRITICAL - state.id.name is undefined!');
-		}
+		console.log(`DO Constructor: Initialized for projectId=${this.projectId}`);
+
 	}
+
+
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
@@ -262,6 +267,9 @@ export class UserWebSocketBridge implements DurableObject {
 
 	private async handleMessage(senderId: string, message: string): Promise<void> {
 
+
+		console.log('message received in DO', message);
+
 		if (!message || typeof message !== 'string') {
 			console.error(`DO ${this.projectId}: Invalid message - not a string or empty`);
 			this.sendError(senderId, 'Invalid message format');
@@ -269,6 +277,7 @@ export class UserWebSocketBridge implements DurableObject {
 		}
 
 		try {
+			console.log(`DO ${this.projectId}: doing parse`);
 			const data: WebSocketMessage = JSON.parse(message);
 
 			console.log(`DO ${this.projectId}: Parsed message:`, JSON.stringify(data, null, 2));
@@ -278,6 +287,7 @@ export class UserWebSocketBridge implements DurableObject {
 
 			switch (data.type) {
 				case 'graphql_query':
+					console.log('graphql_query received in DO forward in to data agent', data);
 					await this.forwardToDataAgent(senderId, data);
 					break;
 				case 'get_docs':
@@ -287,15 +297,20 @@ export class UserWebSocketBridge implements DurableObject {
 					await this.forwardDocsToRuntime(senderId, data);
 					break;
 				case 'query_response':
+					console.log('query_response received in DO forward into runtime', data);
 					await this.forwardToRuntime(senderId, data);
 					break;
 				case 'ping':
 					this.handlePing(senderId);
 					break;
+				case 'error': // 👈 new case
+					this.handleErrorMessage(senderId, data);					
+					break;
 				default:
-					this.sendError(senderId, `Unknown message type: ${data.type}`);
+					this.handleUnknownMessage(senderId, data);					
+					// this.sendError(senderId, `Unknown message type: ${data.type}`);
+					break;
 			}
-
 
 		} catch (parseError: any) {
 			console.error(`DO ${this.projectId}: Parse error message:`, parseError.message, JSON.stringify(message, null, 2));
@@ -493,8 +508,28 @@ export class UserWebSocketBridge implements DurableObject {
 		return null;
 	}
 
+	// Centralized error logger — no echoing back
+	private handleErrorMessage(senderId: string, data: any): void {
+		console.warn(`DO ${this.projectId}: Received error from ${senderId}:`, data);
+		// just log & drop — prevents loops
+	}
+
+	// Centralized unknown type handler
+	private handleUnknownMessage(senderId: string, data: any): void {
+		console.warn(`DO ${this.projectId}: Unknown message type "${data?.type}" from ${senderId}`, data);
+		// If you want to notify client during dev, uncomment:
+		// this.sendError(senderId, `Unknown message type: ${data?.type}`);
+	}
+
+
 	private sendError(clientId: string, message: string, requestId?: string): void {
 		console.log(`DO ${this.projectId}: *** SENDING ERROR to ${clientId} ***`);
+
+		// 🔒 Prevent infinite loops: don't send error in response to an error
+		if (message.toLowerCase().includes("error")) {
+			console.warn(`DO ${this.projectId}: Skipping error send to ${clientId} to avoid loop:`, message);
+			return;
+		}
 
 		const connection = this.findConnection(clientId);
 		if (!connection) {
