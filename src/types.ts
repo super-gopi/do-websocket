@@ -4,7 +4,7 @@ export interface Env {
 }
 
 // Client types
-export type ClientType = 'runtime' | 'agent';
+export type ClientType = 'runtime' | 'agent' | 'prod' | 'admin';
 
 // Connection interface
 export interface Connection {
@@ -37,6 +37,24 @@ export interface GraphQLQueryMessage extends WebSocketMessage {
 	variables?: Record<string, any>;
 	requestId: string;
 	projectId: string;
+}
+
+export interface GetProdUIMessage extends WebSocketMessage {
+	type: 'get_prod_ui';
+	projectId: string;
+	uiId: string;
+	requestId: string;
+	prodId?: string;
+}
+
+export interface ProdUIResponse extends WebSocketMessage {
+	type: 'prod_ui_response';
+	requestId: string;
+	uiId: string;
+	projectId: string;
+	data?:any
+	error?: string;
+	prodId?: string;
 }
 
 // Query Response Message

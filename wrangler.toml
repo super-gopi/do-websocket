@@ -13,6 +13,9 @@ class_name = "UserWebSocket"
 tag = "v1"
 new_sqlite_classes = ["UserWebSocket"]
 
+[observability.logs]
+enabled = true
+
 # Optional: Environment variables
 # [vars]
 # ENVIRONMENT = "production"
