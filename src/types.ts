@@ -57,6 +57,18 @@ export interface ProdUIResponse extends WebSocketMessage {
 	prodId?: string;
 }
 
+export interface CheckAgentsMessage extends WebSocketMessage {
+	type: 'check_agents';
+	requestId: string;
+	projectId: string;
+}
+
+export interface AgentStatusResponse extends WebSocketMessage {
+	type: 'agent_status_response';
+	agents:any;
+	timestamp: number;
+}
+
 // Query Response Message
 export interface QueryResponseMessage extends WebSocketMessage {
 	type: 'query_response';

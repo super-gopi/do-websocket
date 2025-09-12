@@ -82,6 +82,23 @@ ws.onmessage = (event) => {
 };
 ```
 
+
+### Connecting Admin
+
+```javascript
+const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=admin&projectId=3');
+
+ws.onopen = () => {
+  console.log('admin connected');
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+ console.log('received message:', data);
+};
+``` 
+
+
 ### Sending Messages
 
 #### GraphQL Query (Runtime → Agent)

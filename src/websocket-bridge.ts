@@ -6,7 +6,9 @@ import {
 	DocsMessage,
 	GetDocsMessage,
 	GetProdUIMessage,
-	ProdUIResponse
+	ProdUIResponse,
+	CheckAgentsMessage,
+	AgentStatusResponse
 } from './types';
 
 // Add pending requests tracking
@@ -159,22 +161,52 @@ export class UserWebSocket implements DurableObject {
 			};
 
 			// Store connection based on type
+			// if (clientType === 'runtime') {
+			// 	if (this.runtime) {
+			// 		try {
+			// 			// Cancel pending requests for old runtime
+			// 			this.cancelPendingRequestsForRuntime(this.runtime.id);
+			// 			this.runtime.socket.close(1000, 'New runtime connection');
+			// 		} catch (e) {
+			// 			console.warn(`DO ${this.projectId}: Error closing old runtime:`, e);
+			// 		}
+			// 	}
+			// 	this.runtime = connection;
+			// } 
+			// Store connection based on type
 			if (clientType === 'runtime') {
 				if (this.runtime) {
-					try {
-						// Cancel pending requests for old runtime
+					// Only close old connection if it's actually dead/broken
+					if (this.runtime.socket.readyState === WebSocket.CLOSED ||
+						this.runtime.socket.readyState === WebSocket.CLOSING) {
+						console.log(`DO ${this.projectId}: Replacing dead runtime connection`);
 						this.cancelPendingRequestsForRuntime(this.runtime.id);
-						this.runtime.socket.close(1000, 'New runtime connection');
-					} catch (e) {
-						console.warn(`DO ${this.projectId}: Error closing old runtime:`, e);
+						this.runtime = connection;
+					} else if (this.runtime.socket.readyState === WebSocket.OPEN) {
+						// Old connection is still healthy - reject the new one
+						console.log(`DO ${this.projectId}: Healthy runtime already exists, rejecting new connection`);
+						server.close(1008, 'Runtime already connected - use existing connection');
+						return new Response('Runtime already connected', {
+							status: 409,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} else {
+						// Connection is in CONNECTING state, replace it
+						console.log(`DO ${this.projectId}: Replacing connecting runtime connection`);
+						this.cancelPendingRequestsForRuntime(this.runtime.id);
+						this.runtime = connection;
 					}
+				} else {
+					// No existing runtime - accept this connection
+					console.log(`DO ${this.projectId}: First runtime connection established`);
+					this.runtime = connection;
 				}
-				this.runtime = connection;
-			} else if (clientType === 'agent') {
+			}
+			else if (clientType === 'agent') {
 				this.agents.set(clientId, connection);
-			} else if (clientType === 'prod') {
+			}else if (clientType === 'prod') {
 				this.prods.set(clientId, connection);
-			} else if (clientType === 'admin') {
+			}else if (clientType === 'admin') {
 				this.admins.set(clientId, connection);
 				console.log(`DO ${this.projectId}: Admin client ${clientId} connected`);
 			}
@@ -348,6 +380,10 @@ export class UserWebSocket implements DurableObject {
 				case 'prod_ui_response':
 					await this.forwardProdUIResponseToProd(senderId, data as ProdUIResponse);
 					break;
+
+				case 'check_agents':
+					this.handleCheckAgents(senderId, data as CheckAgentsMessage);
+					break;
 				case 'ping':
 					this.handlePing(senderId);
 					break;
@@ -515,10 +551,36 @@ export class UserWebSocket implements DurableObject {
 		}
 
 		const docsRequest = data as GetDocsMessage;
+		const requestId = docsRequest.requestId;
+
+		if (!requestId) {
+			console.error(`DO ${this.projectId}: Missing requestId in docs request`);
+			this.sendError(runtimeId, 'Missing requestId in docs request');
+			return;
+		}
+
+		// Track pending docs request with timeout
+		const timeoutId = setTimeout(() => {
+			console.error(`DO ${this.projectId}: Docs request ${requestId} timed out`);
+			this.pendingRequests.delete(requestId);
+			this.sendError(runtimeId, `Docs request timeout after ${this.REQUEST_TIMEOUT}ms`, requestId);
+		}, this.REQUEST_TIMEOUT);
+
+		this.pendingRequests.set(requestId, {
+			requestId,
+			runtimeId,
+			timestamp: Date.now(),
+			timeoutId
+		});
+
 		const agent = this.getAvailableAgent();
 
 		if (!agent) {
 			console.log(`DO ${this.projectId}: No agent for docs - returning dummy docs`);
+			
+			// Clear timeout since we're handling it immediately
+			clearTimeout(timeoutId);
+			this.pendingRequests.delete(requestId);
 
 			const dummyDocs = this.generateDummyDocs(this.projectId);
 			const dummyResponse: DocsMessage = {
@@ -529,7 +591,7 @@ export class UserWebSocket implements DurableObject {
 				timestamp: Date.now()
 			};
 
-			if (this.runtime) {
+			if (this.runtime && this.runtime.id === runtimeId) {
 				try {
 					this.runtime.socket.send(JSON.stringify(dummyResponse));
 					console.log(`DO ${this.projectId}: Dummy docs sent to runtime`);
@@ -542,10 +604,22 @@ export class UserWebSocket implements DurableObject {
 
 		const forwardMessage: GetDocsMessage = { ...docsRequest, runtimeId: runtimeId } as any;
 		try {
+			// Check if agent socket is still open
+			if (agent.socket.readyState !== WebSocket.OPEN) {
+				console.error(`DO ${this.projectId}: Agent socket not open for docs request ${requestId}`);
+				clearTimeout(timeoutId);
+				this.pendingRequests.delete(requestId);
+				this.agents.delete(agent.id);
+				this.sendError(runtimeId, 'Agent connection not available', requestId);
+				return;
+			}
+
 			agent.socket.send(JSON.stringify(forwardMessage));
-			console.log(`DO ${this.projectId}: Docs request forwarded to agent`);
+			console.log(`DO ${this.projectId}: Docs request ${requestId} forwarded to agent ${agent.id}`);
 		} catch (error) {
 			console.error(`DO ${this.projectId}: Failed to forward docs request:`, error);
+			clearTimeout(timeoutId);
+			this.pendingRequests.delete(requestId);
 			this.sendError(runtimeId, `Failed to forward docs request`, docsRequest.requestId);
 		}
 	}
@@ -558,16 +632,50 @@ export class UserWebSocket implements DurableObject {
 			return;
 		}
 
+		const responseData = data as any;
+		const requestId = responseData.requestId;
+
+		if (!requestId) {
+			console.error(`DO ${this.projectId}: Missing requestId in docs response`);
+			return;
+		}
+
+		// Check if we have a pending request for this docs response
+		const pending = this.pendingRequests.get(requestId);
+		if (!pending) {
+			console.warn(`DO ${this.projectId}: No pending docs request found for response ${requestId} - possible duplicate or timeout`);
+			return;
+		}
+
+		// Clear timeout and remove from pending
+		if (pending.timeoutId) {
+			clearTimeout(pending.timeoutId);
+		}
+		this.pendingRequests.delete(requestId);
+
 		if (!this.runtime) {
-			console.warn(`DO ${this.projectId}: No runtime connection for docs response`);
+			console.warn(`DO ${this.projectId}: No runtime connection for docs response ${requestId}`);
+			return;
+		}
+
+		// Verify this response should go to the current runtime
+		if (this.runtime.id !== pending.runtimeId) {
+			console.warn(`DO ${this.projectId}: Runtime ID mismatch for docs response ${requestId}. Expected: ${pending.runtimeId}, Current: ${this.runtime.id}`);
 			return;
 		}
 
 		try {
-			this.runtime.socket.send(JSON.stringify(data));
-			console.log(`DO ${this.projectId}: Docs forwarded to runtime`);
+			// Check if runtime socket is still open
+			if (this.runtime.socket.readyState !== WebSocket.OPEN) {
+				console.error(`DO ${this.projectId}: Runtime socket not open for docs response ${requestId}`);
+				return;
+			}
+
+			const responseStr = JSON.stringify(data);
+			this.runtime.socket.send(responseStr);
+			console.log(`DO ${this.projectId}: Docs response ${requestId} sent to runtime successfully`);
 		} catch (error) {
-			console.error(`DO ${this.projectId}: Failed to forward docs to runtime:`, error);
+			console.error(`DO ${this.projectId}: Failed to send docs response ${requestId} to runtime:`, error);
 		}
 	}
 
@@ -605,6 +713,45 @@ export class UserWebSocket implements DurableObject {
 			console.log(`DO ${this.projectId}: Forwarded prod_ui_response ${data.requestId} to prod ${data.prodId}`);
 		} catch (err) {
 			console.error(`DO ${this.projectId}: Failed to send prod_ui_response to prod ${data.prodId}:`, err);
+		}
+	}
+
+	private async handleCheckAgents(senderId: string, data: CheckAgentsMessage): Promise<void> {
+		console.log(`DO ${this.projectId}: Handling check_agents request from ${senderId}, requestId: ${data.requestId}`);
+
+		const connection = this.findConnection(senderId);
+		if (!connection) {
+			console.error(`DO ${this.projectId}: No connection found for check_agents sender: ${senderId}`);
+			return;
+		}
+
+		if (connection.socket.readyState !== WebSocket.OPEN) {
+			console.error(`DO ${this.projectId}: Connection not open for check_agents sender: ${senderId}`);
+			return;
+		}
+
+		// Get only active agents (with open WebSocket connections)
+		const activeAgents = Array.from(this.agents.values())
+			.filter(agent => agent.socket.readyState === WebSocket.OPEN)
+			.map(agent => ({
+				id: agent.id,
+				connectedAt: agent.connectedAt,
+				projectId: agent.projectId
+			}));
+
+		const response: AgentStatusResponse = {
+			type: 'agent_status_response',
+			requestId: data.requestId,
+			projectId: this.projectId,
+			agents: activeAgents,
+			timestamp: Date.now()
+		};
+
+		try {
+			connection.socket.send(JSON.stringify(response));
+			console.log(`DO ${this.projectId}: Sent active agent status to ${senderId} - ${activeAgents.length} active agents`);
+		} catch (error) {
+			console.error(`DO ${this.projectId}: Failed to send agent status response:`, error);
 		}
 	}
 
