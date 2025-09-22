@@ -143,3 +143,11 @@ export interface UserConnections {
 	agents: Connection[];
 	lastActivity: number;
 }
+
+ 
+export interface PendingRequest {
+	requestId: string;
+	runtimeId: string;
+	timestamp: number;
+	timeoutId?: number;
+}
