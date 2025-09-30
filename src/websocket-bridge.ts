@@ -9,7 +9,9 @@ import {
 	ProdUIResponse,
 	CheckAgentsMessage,
 	AgentStatusResponse,
-	PendingRequest
+	PendingRequest,
+	StoredLog,
+	LogBucket
 } from './types';
 
 import { generateDummyData, generateDummyDocs } from '../utils/dummy-data';
@@ -30,6 +32,10 @@ export class UserWebSocket implements DurableObject {
 	// Add pending requests tracking
 	private pendingRequests: Map<string, PendingRequest> = new Map();
 	private readonly REQUEST_TIMEOUT = 30000; // 30 seconds
+
+	// Log storage constants
+	private readonly LOG_RETENTION_HOURS = 24;
+	private readonly MAX_LOGS_PER_HOUR = 1000;
 
 	constructor(state: DurableObjectState, env: Env) {
 		this.state = state;
@@ -79,6 +85,7 @@ export class UserWebSocket implements DurableObject {
 				headers: { 'Content-Type': 'application/json' }
 			});
 		}
+
 
 		return new Response('Not found', { status: 404 });
 	}
@@ -191,6 +198,9 @@ export class UserWebSocket implements DurableObject {
 			}else if (clientType === 'admin') {
 				this.admins.set(clientId, connection);
 				console.log(`DO ${this.projectId}: Admin client ${clientId} connected`);
+
+				// Send historical logs to newly connected admin
+				await this.sendHistoricalLogsToAdmin(connection);
 			}
 
 			this.lastActivity = Date.now();
@@ -319,6 +329,9 @@ export class UserWebSocket implements DurableObject {
 			}
 			this.pendingRequests.clear();
 		}
+
+		// Always cleanup old logs regardless of connection status
+		await this.cleanupOldLogs();
 	}
 
 	private async handleMessage(senderId: string, message: string): Promise<void> {
@@ -340,6 +353,9 @@ export class UserWebSocket implements DurableObject {
 
 			//sending all the do messages to admins
 			this.broadcastToAdmins(senderId, data);
+
+			// Store log for historical access
+			await this.storeMessageLog(senderId, data, 'incoming');
 
 			switch (data.type) {
 				case 'graphql_query':
@@ -844,6 +860,166 @@ export class UserWebSocket implements DurableObject {
 		}
 	}
 
+	// ============= LOG STORAGE METHODS =============
+
+	private getHourKey(timestamp: number): string {
+		const date = new Date(timestamp);
+		const year = date.getUTCFullYear();
+		const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(date.getUTCDate()).padStart(2, '0');
+		const hour = String(date.getUTCHours()).padStart(2, '0');
+		return `${year}-${month}-${day}-${hour}`;
+	}
+
+	private async storeLog(log: StoredLog): Promise<void> {
+		const hourKey = this.getHourKey(log.timestamp);
+		const storageKey = `logs:${hourKey}`;
+
+		try {
+			// Get existing bucket or create new one
+			const storedBucket = await this.state.storage.get(storageKey);
+			let bucket: LogBucket | null = storedBucket as LogBucket || null;
+
+			if (!bucket) {
+				bucket = {
+					hourKey,
+					logs: [],
+					createdAt: Date.now()
+				};
+			}
+
+			// Add log to bucket (keep only recent logs)
+			bucket.logs.unshift(log);
+			if (bucket.logs.length > this.MAX_LOGS_PER_HOUR) {
+				bucket.logs = bucket.logs.slice(0, this.MAX_LOGS_PER_HOUR);
+			}
+
+			// Store updated bucket
+			await this.state.storage.put(storageKey, bucket);
+
+			console.log(`DO ${this.projectId}: Stored log ${log.id} in bucket ${hourKey}`);
+		} catch (error) {
+			console.error(`DO ${this.projectId}: Failed to store log:`, error);
+		}
+	}
+
+	private async sendHistoricalLogsToAdmin(adminConnection: Connection): Promise<void> {
+		try {
+			console.log(`DO ${this.projectId}: Loading historical logs for admin ${adminConnection.id}...`);
+
+			// Get last 24 hours of logs, limit to 500 most recent
+			const historicalLogs = await this.getStoredLogs(this.LOG_RETENTION_HOURS, 500);
+
+			if (historicalLogs.length > 0) {
+				// Send historical logs as a special message
+				const historyMessage = {
+					type: 'historical_logs',
+					logs: historicalLogs,
+					totalCount: historicalLogs.length,
+					projectId: this.projectId,
+					timestamp: Date.now(),
+					message: `Loaded ${historicalLogs.length} historical logs from last 24 hours`
+				};
+
+				if (adminConnection.socket.readyState === WebSocket.OPEN) {
+					adminConnection.socket.send(JSON.stringify(historyMessage));
+					console.log(`DO ${this.projectId}: Sent ${historicalLogs.length} historical logs to admin ${adminConnection.id}`);
+				}
+			} else {
+				// Send empty history message
+				const emptyMessage = {
+					type: 'historical_logs',
+					logs: [],
+					totalCount: 0,
+					projectId: this.projectId,
+					timestamp: Date.now(),
+					message: 'No historical logs found'
+				};
+
+				if (adminConnection.socket.readyState === WebSocket.OPEN) {
+					adminConnection.socket.send(JSON.stringify(emptyMessage));
+					console.log(`DO ${this.projectId}: Sent empty historical logs to admin ${adminConnection.id}`);
+				}
+			}
+		} catch (error) {
+			console.error(`DO ${this.projectId}: Failed to send historical logs to admin:`, error);
+		}
+	}
+
+	private async getStoredLogs(hours: number, limit: number): Promise<StoredLog[]> {
+		const now = Date.now();
+		const allLogs: StoredLog[] = [];
+
+		// Generate hour keys for the requested time range
+		for (let i = 0; i < hours; i++) {
+			const hourTimestamp = now - (i * 60 * 60 * 1000);
+			const hourKey = this.getHourKey(hourTimestamp);
+			const storageKey = `logs:${hourKey}`;
+
+			try {
+				const storedBucket = await this.state.storage.get(storageKey);
+				const bucket = storedBucket as LogBucket | undefined;
+				if (bucket && bucket.logs) {
+					// Filter out logs older than 24 hours
+					const validLogs = bucket.logs.filter(log =>
+						now - log.timestamp < (this.LOG_RETENTION_HOURS * 60 * 60 * 1000)
+					);
+					allLogs.push(...validLogs);
+				}
+			} catch (error) {
+				console.error(`DO ${this.projectId}: Failed to load logs for hour ${hourKey}:`, error);
+			}
+		}
+
+		// Sort by timestamp (newest first) and limit
+		allLogs.sort((a, b) => b.timestamp - a.timestamp);
+		return allLogs.slice(0, limit);
+	}
+
+	private async cleanupOldLogs(): Promise<void> {
+		const cutoffTime = Date.now() - (this.LOG_RETENTION_HOURS * 60 * 60 * 1000);
+
+		try {
+			// List all log storage keys
+			const allKeys = await this.state.storage.list({ prefix: 'logs:' });
+			const keysToDelete: string[] = [];
+
+			for (const [key, bucket] of allKeys.entries()) {
+				const logBucket = bucket as LogBucket;
+				if (logBucket.createdAt < cutoffTime) {
+					keysToDelete.push(key);
+				}
+			}
+
+			// Delete old buckets
+			if (keysToDelete.length > 0) {
+				await this.state.storage.delete(keysToDelete);
+				console.log(`DO ${this.projectId}: Cleaned up ${keysToDelete.length} old log buckets`);
+			}
+		} catch (error) {
+			console.error(`DO ${this.projectId}: Failed to cleanup old logs:`, error);
+		}
+	}
+
+	private async storeMessageLog(senderId: string, message: WebSocketMessage, direction: 'incoming' | 'outgoing'): Promise<void> {
+		const connection = this.findConnection(senderId);
+
+		const logEntry: StoredLog = {
+			id: crypto.randomUUID(),
+			timestamp: message.timestamp || Date.now(),
+			messageType: message.type || 'UNKNOWN',
+			direction,
+			data: message,
+			clientId: senderId,
+			clientType: connection?.type,
+			projectId: this.projectId,
+			fromClientId: direction === 'incoming' ? senderId : undefined
+		};
+
+		await this.storeLog(logEntry);
+	}
+
+	// ============= END LOG STORAGE METHODS =============
 
 	private async getStatus(): Promise<Response> {
 		const status = {

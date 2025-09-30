@@ -151,3 +151,22 @@ export interface PendingRequest {
 	timestamp: number;
 	timeoutId?: number;
 }
+
+// Log storage interfaces
+export interface StoredLog {
+	id: string;
+	timestamp: number;
+	messageType: string;
+	direction: 'incoming' | 'outgoing';
+	data: any;
+	clientId?: string;
+	clientType?: ClientType;
+	projectId: string;
+	fromClientId?: string; // Original sender for forwarded messages
+}
+
+export interface LogBucket {
+	hourKey: string; // Format: "2024-01-15-14" (year-month-day-hour)
+	logs: StoredLog[];
+	createdAt: number;
+}
