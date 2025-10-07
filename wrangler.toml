@@ -8,10 +8,19 @@ compatibility_flags = ["nodejs_compat"]
 name = "USER_WEBSOCKET"
 class_name = "UserWebSocket"
 
-# Migration for the Durable Object
+# Define the Broadcaster Durable Object
+[[durable_objects.bindings]]
+name = "BROADCASTER"
+class_name = "Broadcaster"
+
+# Migration for the Durable Objects
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserWebSocket"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Broadcaster"]
 
 [observability.logs]
 enabled = true
