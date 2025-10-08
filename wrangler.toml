@@ -3,23 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2024-09-02"
 compatibility_flags = ["nodejs_compat"]
 
-# Define the User-scoped WebSocket Bridge Durable Object
-[[durable_objects.bindings]]
-name = "USER_WEBSOCKET"
-class_name = "UserWebSocket"
 
 # Define the Broadcaster Durable Object
 [[durable_objects.bindings]]
 name = "BROADCASTER"
 class_name = "Broadcaster"
 
-# Migration for the Durable Objects
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["UserWebSocket"]
-
-[[migrations]]
-tag = "v2"
 new_sqlite_classes = ["Broadcaster"]
 
 [observability.logs]
