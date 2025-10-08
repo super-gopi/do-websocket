@@ -13,6 +13,14 @@ class_name = "Broadcaster"
 tag = "v1"
 new_sqlite_classes = ["Broadcaster"]
 
+[[migrations]]
+tag = "v2"
+# Previous migration (keeping for continuity)
+
+[[migrations]]
+tag = "v3"
+# Code update - changed from userId to projectId
+
 [observability.logs]
 enabled = true
 

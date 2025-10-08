@@ -2,7 +2,7 @@ export interface BroadcastMessage {
     id:string
 	type: string;
 	from:{
-		type:'runtime' | 'data-agent' | 'admin' | 'system';
+		type?:'runtime' | 'data-agent' | 'admin' | 'system';
 		id?: string;
 	};
 	payload : any;

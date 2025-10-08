@@ -169,7 +169,10 @@ export class Broadcaster implements DurableObject {
 		}
 
 		//adding the clientid as from.id
-		ws_json_message.from.id = senderId;		
+		if(ws_json_message.from && typeof ws_json_message.from === 'object') {
+			ws_json_message.from.id = senderId;		
+		}
+		// ws_json_message.from.id = senderId;		
 
 		const to = ws_json_message.to?.type;
 
