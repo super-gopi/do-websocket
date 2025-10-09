@@ -7,7 +7,7 @@ export interface BroadcastMessage {
 	};
 	payload : any;
 	to?:{
-		type:'runtime' | 'data-agent' | 'admin' | 'system';
+		type?:'runtime' | 'data-agent' | 'admin' | 'system';
 		id?: string;
 	};
 }

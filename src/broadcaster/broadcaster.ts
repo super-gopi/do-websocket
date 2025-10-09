@@ -174,14 +174,12 @@ export class Broadcaster implements DurableObject {
 		}
 		// ws_json_message.from.id = senderId;		
 
-		const to = ws_json_message.to?.type;
+		const targetType = ws_json_message.to?.type ;
+		const targetId = ws_json_message.to?.id;
 
-		console.log('to', to);
-
-		if(to) {
+		if(targetId || targetType) {
 			//route based on to.type
 			
-			const targetId = ws_json_message.to?.id;
 			console.log('targetId', targetId);
 			if(targetId) {
 				const targetClient = this.clients.get(targetId);
@@ -192,7 +190,7 @@ export class Broadcaster implements DurableObject {
 			else {
 				for (const [clientId, client] of this.clients.entries()) {
 					if (clientId !== senderId && client.socket.readyState === WebSocket.OPEN) {
-						if (client.type === to) {
+						if (client.type === targetType) {
 							try {
 								client.socket.send(JSON.stringify(ws_json_message));
 							} catch (error) {
