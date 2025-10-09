@@ -1,34 +1,37 @@
-# User-Scoped WebSocket Bridge
+# Project-Scoped WebSocket Broadcaster
 
-A Cloudflare Workers project that implements user-scoped WebSocket bridges using Durable Objects. Each user gets their own isolated Durable Object instance for perfect data separation and horizontal scaling.
+A Cloudflare Workers project that implements project-scoped WebSocket broadcasting using Durable Objects. Each project gets its own isolated Durable Object instance for perfect data separation and horizontal scaling, enabling real-time communication between multiple client types.
 
 ## Architecture
 
-- **Worker Router**: Routes requests to user-specific Durable Objects based on `projectId`
-- **User WebSocket Bridge**: Each user gets their own Durable Object instance
-- **Runtime & Agent Communication**: Both connect to the same user-scoped DO for isolated communication
+- **Worker Router**: Routes requests to project-specific Durable Objects based on `projectId`
+- **Broadcaster Durable Object**: Each project gets its own Broadcaster instance that manages multiple WebSocket connections
+- **Message Routing**: Smart routing based on message `to` field - supports targeted messages to specific clients or client types, plus admin monitoring
 
 ## Project Structure
 
 ```
 src/
-├── index.ts              # Main worker entry point (router)
-├── websocket-bridge.ts   # User-scoped WebSocket bridge Durable Object
-├── types.ts              # TypeScript type definitions
-package.json              # Dependencies
-wrangler.toml            # Cloudflare Workers configuration
-tsconfig.json            # TypeScript configuration
-README.md                # This file
+├── index.ts                    # Main worker entry point (router)
+├── broadcaster/
+│   ├── broadcaster.ts          # Broadcaster Durable Object implementation
+│   └── types.ts                # TypeScript type definitions
+package.json                    # Dependencies
+wrangler.toml                  # Cloudflare Workers configuration
+tsconfig.json                  # TypeScript configuration
+README.md                      # This file
 ```
 
 ## Features
 
-- ✅ **Perfect User Isolation**: Each user gets their own Durable Object instance
-- ✅ **Horizontal Scaling**: Users scale independently
-- ✅ **Automatic Cleanup**: Empty DOs clean themselves up after 5 minutes
-- ✅ **Runtime ↔ Agent Communication**: Seamless message forwarding within user scope
-- ✅ **Dummy Data Support**: Falls back to test data when agents aren't connected
-- ✅ **Health Monitoring**: Status endpoints for debugging
+- ✅ **Perfect Project Isolation**: Each project gets its own Durable Object instance
+- ✅ **Horizontal Scaling**: Projects scale independently
+- ✅ **Smart Message Routing**: Route messages to specific clients by ID or type
+- ✅ **Multiple Client Types**: Support for runtime, data-agent, and admin clients
+- ✅ **Admin Monitoring**: All routed messages are automatically forwarded to admin clients for observability
+- ✅ **Broadcast Capability**: Messages without `to` field broadcast to all other clients
+- ✅ **Automatic Cleanup**: Empty DOs clean themselves up after 5 minutes of inactivity
+- ✅ **Health Monitoring**: Status and health endpoints for debugging
 
 ## Getting Started
 
@@ -70,111 +73,189 @@ ws.onmessage = (event) => {
 ### Connecting Data Agent
 
 ```javascript
-const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=agent&projectId=user123');
+const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=data-agent&projectId=user123');
 
 ws.onopen = () => {
-  console.log('Agent connected');
+  console.log('Data agent connected');
 };
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
- console.log('received message:', data);
+  console.log('Received message:', data);
 };
 ```
 
-
-### Connecting Admin
+### Connecting Admin (for monitoring)
 
 ```javascript
-const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=admin&projectId=3');
+const ws = new WebSocket('wss://user-websocket.ashish-91e.workers.dev/websocket?type=admin&projectId=user123');
 
 ws.onopen = () => {
-  console.log('admin connected');
+  console.log('Admin connected');
 };
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
- console.log('received message:', data);
+  console.log('Admin received:', data);
 };
 ``` 
 
 
 ### Sending Messages
 
-#### GraphQL Query (Runtime → Agent)
+All messages follow a standard format with routing capabilities:
+
+```typescript
+interface BroadcastMessage {
+  id: string;                    // Unique message ID
+  type: string;                  // Message type (custom)
+  from: {                        // Sender info (auto-populated with client ID)
+    type?: 'runtime' | 'data-agent' | 'admin' | 'system';
+    id?: string;                 // Auto-set to sender's client ID
+  };
+  payload: any;                  // Your message data
+  to?: {                         // Optional routing
+    type?: 'runtime' | 'data-agent' | 'admin' | 'system';
+    id?: string;                 // Specific client ID
+  };
+}
+```
+
+#### Example: Runtime → Specific Agent (by client ID)
 
 ```javascript
 const message = {
+  id: crypto.randomUUID(),
   type: 'graphql_query',
-  requestId: 'req-123',
-  projectId: 'user123',
-  query: 'query { posts { id title author { name } } }',
-  variables: {}
+  from: {
+    type: 'runtime'
+  },
+  to: {
+    id: 'specific-agent-client-id'  // Send to specific client
+  },
+  payload: {
+    query: 'query { posts { id title } }',
+    variables: {}
+  }
 };
 
 ws.send(JSON.stringify(message));
 ```
 
-#### Query Response (Agent → Runtime)
+#### Example: Runtime → All Data Agents (by type)
+
+```javascript
+const message = {
+  id: crypto.randomUUID(),
+  type: 'get_docs',
+  from: {
+    type: 'runtime'
+  },
+  to: {
+    type: 'data-agent'  // Send to all data-agent clients
+  },
+  payload: {
+    requestId: 'docs-123'
+  }
+};
+
+ws.send(JSON.stringify(message));
+```
+
+#### Example: Agent → Runtime (response)
 
 ```javascript
 const response = {
+  id: crypto.randomUUID(),
   type: 'query_response',
-  requestId: 'req-123',
-  projectId: 'user123',
-  data: { 
-    posts: [
-      { id: "1", title: "Hello world" },
-      { id: "2", title: "Durable Objects are great" }
-    ]
+  from: {
+    type: 'data-agent'
   },
-  timestamp: Date.now()
+  to: {
+    type: 'runtime'
+  },
+  payload: {
+    data: {
+      posts: [
+        { id: "1", title: "Hello world" },
+        { id: "2", title: "Durable Objects are great" }
+      ]
+    }
+  }
 };
 
 ws.send(JSON.stringify(response));
 ```
 
-#### Get Documentation (Runtime → Agent)
+#### Example: Broadcast to All (no `to` field)
 
 ```javascript
-const docsRequest = {
-  type: 'get_docs',
-  requestId: 'docs-123',
-  projectId: 'user123',
-  timestamp: Date.now()
+const broadcast = {
+  id: crypto.randomUUID(),
+  type: 'announcement',
+  from: {
+    type: 'runtime'
+  },
+  payload: {
+    message: 'Server will restart in 5 minutes'
+  }
+  // No 'to' field - broadcasts to all other connected clients
 };
 
-ws.send(JSON.stringify(docsRequest));
+ws.send(JSON.stringify(broadcast));
 ```
 
 ## API Endpoints
 
 ### WebSocket Connection
-- `GET /websocket?type={runtime|agent}&projectId={projectId}`
+- `GET /websocket?type={runtime|data-agent|admin}&projectId={projectId}`
   - Upgrade to WebSocket connection
-  - Routes to user-specific Durable Object
+  - Routes to project-specific Broadcaster Durable Object
+  - Required parameters:
+    - `projectId`: Your project identifier
+    - `type`: Client type (runtime, data-agent, or admin)
 
 ### Status & Health
 - `GET /status?projectId={projectId}`
-  - Get connection status for specific user
+  - Get detailed connection status for a specific project
+  - Returns client list with connection info
 - `GET /health?projectId={projectId}`
-  - Health check for specific user's DO
+  - Health check for specific project's Broadcaster DO
+  - Returns client count and last activity timestamp
+- `GET /health`
+  - Worker-level health check (no projectId required)
 
-## Message Types
+## Message Routing Behavior
 
-### Runtime → Agent
-- `graphql_query`: Execute GraphQL query
-- `get_docs`: Get database documentation
-- `ping`: Heartbeat
+### Routing Rules
 
-### Agent → Runtime  
-- `query_response`: GraphQL query result
-- `docs`: Database documentation
-- `pong`: Heartbeat response
+1. **Targeted by Client ID** (`to.id` is set)
+   - Message is sent only to the client with the specified ID
+   - Also forwarded to all admin clients for monitoring
+
+2. **Targeted by Client Type** (`to.type` is set, but not `to.id`)
+   - Message is sent to all clients of the specified type (except sender)
+   - Also forwarded to all admin clients for monitoring
+
+3. **Broadcast** (no `to` field)
+   - Message is sent to all other connected clients (except sender)
+   - **Not** forwarded to admin clients
+
+### Admin Monitoring
+
+- Admin clients automatically receive copies of all **routed messages** (messages with a `to` field)
+- This enables real-time monitoring and debugging of client-to-client communication
+- Broadcast messages (without `to` field) are not sent to admins unless they're explicitly targeted
 
 ### System Messages
-- `connected`: Welcome message on connection
-- `error`: Error notifications
+
+The Broadcaster sends these system messages:
+
+- `connected`: Welcome message when a client connects
+  - Includes `clientId`, `projectId`, `clientCount`, and `timestamp`
+- `client_left`: Notification when a client disconnects
+  - Sent to all remaining clients
+- `error`: Error notifications for invalid messages or other issues
 
 ## Environment Variables
 
@@ -239,36 +320,47 @@ curl "https://your-worker.your-subdomain.workers.dev/status?projectId=user123"
 curl "https://your-worker.your-subdomain.workers.dev/health?projectId=user123"
 ```
 
-## Benefits over Single DO Architecture
+## Benefits of Project-Scoped Architecture
 
-| Aspect | Single DO | User-Scoped DOs |
-|--------|-----------|-----------------|
-| **Isolation** | ❌ All users mixed | ✅ Perfect separation |
-| **Scaling** | ❌ Single bottleneck | ✅ Horizontal scaling |
-| **Performance** | ❌ Degrades with users | ✅ Consistent per user |
-| **Security** | ❌ Data leakage risk | ✅ Impossible cross-user access |
-| **Resource Usage** | ❌ All users compete | ✅ Dedicated resources |
-| **Failure Impact** | ❌ Affects all users | ✅ Isolated failures |
+| Aspect | Global Singleton | Project-Scoped DOs |
+|--------|-----------------|---------------------|
+| **Isolation** | ❌ All projects mixed | ✅ Perfect separation per project |
+| **Scaling** | ❌ Single bottleneck | ✅ Horizontal scaling per project |
+| **Performance** | ❌ Degrades with load | ✅ Consistent per project |
+| **Security** | ❌ Cross-project leakage risk | ✅ Impossible cross-project access |
+| **Resource Usage** | ❌ All projects compete | ✅ Dedicated resources per project |
+| **Failure Impact** | ❌ Affects all projects | ✅ Isolated failures per project |
+| **Routing** | ❌ Application-level | ✅ Built-in with smart routing |
 
 ## Troubleshooting
 
 ### Common Issues
 
 **WebSocket connection fails**
-- Ensure `projectId` parameter is provided
-- Check that the URL includes the correct protocol (`wss://`)
+- Ensure both `projectId` and `type` parameters are provided
+- Check that `type` is one of: `runtime`, `data-agent`, or `admin`
+- Verify the URL includes the correct protocol (`wss://`)
 
-**Messages not forwarding**
-- Verify both runtime and agent are connected to the same `projectId`
-- Check console logs for routing errors
+**Messages not being routed**
+- Verify sender and recipient are connected to the same `projectId`
+- Check that the `to` field in your message has either `id` or `type` set
+- Ensure the target client type exists and is connected
+- Check browser/server console logs for routing errors
 
-**Empty responses**
-- Normal behavior when no agent is connected
-- System will return dummy data for testing
+**Messages going to wrong clients**
+- Remember: `from.id` is auto-populated by the server (don't set it yourself)
+- Verify `to.id` contains the correct client ID (from the `connected` message)
+- For type-based routing, ensure `to.type` matches the recipient's connection type
+
+**Admin not receiving messages**
+- Admin clients only receive messages with a `to` field (routed messages)
+- Broadcast messages (without `to`) are not sent to admins
+- Ensure admin client is connected with `type=admin`
 
 **DO cleanup issues**
-- DOs automatically clean up after 5 minutes of inactivity
+- Broadcaster DOs automatically schedule cleanup after 5 minutes of inactivity
 - Active connections prevent cleanup
+- Empty DOs will clean up when alarm fires
 
 ### Debug Logging
 
