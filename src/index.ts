@@ -8,9 +8,6 @@ export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
-		console.log('Request URL:', url.toString());
-
-
 		// Health check endpoint
 		if (url.pathname === '/health' && !url.searchParams.get('projectId') && !url.searchParams.get('userId')) {
 			return new Response(JSON.stringify({

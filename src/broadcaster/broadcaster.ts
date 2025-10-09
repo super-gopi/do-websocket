@@ -14,7 +14,6 @@ export class Broadcaster implements DurableObject {
 		this.env = env;
 		this.lastActivity = Date.now();
 		this.projectId = state.id.name || 'unknown';
-		console.log(`Broadcaster: Initialized for projectId=${this.projectId}`);
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -32,7 +31,6 @@ export class Broadcaster implements DurableObject {
 		}
 
 		this.projectId = urlProjectId;
-		console.log(`Broadcaster ${this.projectId}: ${request.method} ${url.pathname}`);
 
 		if (url.pathname === '/websocket') {
 			return this.handleWebSocketUpgrade(request);
@@ -97,7 +95,6 @@ export class Broadcaster implements DurableObject {
 			this.clients.set(clientId, broadcastClient);
 			this.lastActivity = Date.now();
 
-			console.log(`Broadcaster ${this.projectId}: Client ${clientId} connected (total: ${this.clients.size})`);
 
 			// Event listeners
 			server.addEventListener('message', (event: MessageEvent) => {
@@ -105,7 +102,6 @@ export class Broadcaster implements DurableObject {
 			});
 
 			server.addEventListener('close', (event) => {
-				console.log(`Broadcaster ${this.projectId}: Client ${clientId} disconnected`);
 				this.handleDisconnection(clientId);
 			});
 
@@ -151,7 +147,9 @@ export class Broadcaster implements DurableObject {
 	}
 
 	private handleMessage(senderId: string, message: string): void {
-		console.log(`Broadcaster ${this.projectId}: Message from client ${senderId}`);
+		// Update activity timestamp
+		this.lastActivity = Date.now();
+
 
 		if (!message || typeof message !== 'string') {
 			console.error(`Broadcaster ${this.projectId}: Invalid message format`);
@@ -172,27 +170,30 @@ export class Broadcaster implements DurableObject {
 		if(ws_json_message.from && typeof ws_json_message.from === 'object') {
 			ws_json_message.from.id = senderId;		
 		}
-		// ws_json_message.from.id = senderId;		
 
 		const targetType = ws_json_message.to?.type ;
 		const targetId = ws_json_message.to?.id;
 
 		if(targetId || targetType) {
 			//route based on to.type
-			
-			console.log('targetId', targetId);
+			const messageStr = JSON.stringify(ws_json_message);
+
 			if(targetId) {
 				const targetClient = this.clients.get(targetId);
-				if(targetClient) {
-					targetClient.socket.send(JSON.stringify(ws_json_message));
+				if(targetClient && targetClient.socket.readyState === WebSocket.OPEN) {
+					try {
+						targetClient.socket.send(messageStr);
+					} catch (error) {
+						console.error(`Broadcaster ${this.projectId}: Failed to send to target:`, error);
+					}
 				}
-			} 
+			}
 			else {
 				for (const [clientId, client] of this.clients.entries()) {
 					if (clientId !== senderId && client.socket.readyState === WebSocket.OPEN) {
 						if (client.type === targetType) {
 							try {
-								client.socket.send(JSON.stringify(ws_json_message));
+								client.socket.send(messageStr);
 							} catch (error) {
 								console.error(`Broadcaster ${this.projectId}: Failed to send to client ${clientId}:`, error);
 							}
@@ -201,9 +202,8 @@ export class Broadcaster implements DurableObject {
 				}
 			}
 
-			//send to admin 
-			console.log('sending to admin');
-			this.broadcastToadmin(senderId, ws_json_message);
+			//send to admin (for monitoring routed messages) - reuse messageStr
+			this.broadcastToadminOptimized(senderId, messageStr);
 		} 
 		//if to is not present then broadcast to others
 		else {
@@ -214,24 +214,6 @@ export class Broadcaster implements DurableObject {
 	private handleDisconnection(clientId: string): void {
 		this.clients.delete(clientId);
 		this.lastActivity = Date.now();
-
-		console.log(`Broadcaster ${this.projectId}: Client ${clientId} removed (remaining: ${this.clients.size})`);
-
-		// Notify other clients about disconnection
-		const leaveMessage: BroadcastMessage = {
-			id: crypto.randomUUID(),
-			type: 'client_left',
-			from: {
-				type: 'system'
-			},
-			payload: {
-				clientId: clientId,
-				projectId: this.projectId,
-				clientCount: this.clients.size,
-				timestamp: Date.now()
-			}
-		};
-		this.broadcastToAll(leaveMessage);
 
 		// Schedule cleanup if room is empty
 		if (this.clients.size === 0) {
@@ -269,14 +251,16 @@ export class Broadcaster implements DurableObject {
 
 	private broadcastToadmin(senderId: string, message: any): void {
 		const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
+		this.broadcastToadminOptimized(senderId, messageStr);
+	}
 
+	private broadcastToadminOptimized(senderId: string, messageStr: string): void {
 		for (const [clientId, client] of this.clients.entries()) {
 			if (clientId !== senderId && client.type === 'admin' && client.socket.readyState === WebSocket.OPEN) {
 				try {
 					client.socket.send(messageStr);
-					console.log(`Broadcaster ${this.projectId}: Forwarded message of type ${message.type} to admin ${clientId}`);
 				} catch (error) {
-					console.error(`Broadcaster ${this.projectId}: Failed to send to client ${clientId}:`, error);
+					console.error(`Broadcaster ${this.projectId}: Failed to send to admin:`, error);
 				}
 			}
 		}
@@ -310,12 +294,11 @@ export class Broadcaster implements DurableObject {
 	private async scheduleCleanup(): Promise<void> {
 		const cleanupTime = Date.now() + 5 * 60 * 1000; // 5 minutes
 		await this.state.storage.setAlarm(cleanupTime);
-		console.log(`Broadcaster ${this.projectId}: Scheduled cleanup in 5 minutes`);
 	}
 
 	async alarm(): Promise<void> {
 		if (this.clients.size === 0) {
-			console.log(`Broadcaster ${this.projectId}: Alarm triggered - room is empty, cleaning up`);
+			// DO will naturally hibernate and stop consuming CPU/duration
 		}
 	}
 
