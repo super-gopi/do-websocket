@@ -77,9 +77,17 @@ export class Broadcaster implements DurableObject {
 			const webSocketPair = new WebSocketPair();
 			const [client, server] = Object.values(webSocketPair);
 
-			server.accept();
-
 			const clientId = crypto.randomUUID();
+
+			// Use hibernatable WebSockets - attach metadata as tags
+			// Tags format: ["clientId:xxx", "type:xxx", "connectedAt:xxx"]
+			this.state.acceptWebSocket(server, [
+				`clientId:${clientId}`,
+				`type:${type}`,
+				`connectedAt:${Date.now()}`,
+				`userAgent:${request.headers.get('User-Agent') || 'unknown'}`,
+				`origin:${request.headers.get('Origin') || 'unknown'}`
+			]);
 
 			const broadcastClient: BroadcastClient = {
 				id: clientId,
@@ -94,21 +102,6 @@ export class Broadcaster implements DurableObject {
 
 			this.clients.set(clientId, broadcastClient);
 			this.lastActivity = Date.now();
-
-
-			// Event listeners
-			server.addEventListener('message', (event: MessageEvent) => {
-				this.handleMessage(clientId, event.data as string);
-			});
-
-			server.addEventListener('close', (event) => {
-				this.handleDisconnection(clientId);
-			});
-
-			server.addEventListener('error', (event: Event) => {
-				console.error(`Broadcaster ${this.projectId}: WebSocket error for client ${clientId}`);
-				this.handleDisconnection(clientId);
-			});
 
 			// Send welcome message
 			const welcomeMessage: BroadcastMessage = {
@@ -146,80 +139,6 @@ export class Broadcaster implements DurableObject {
 		}
 	}
 
-	private handleMessage(senderId: string, message: string): void {
-		// Update activity timestamp
-		this.lastActivity = Date.now();
-
-
-		if (!message || typeof message !== 'string') {
-			console.error(`Broadcaster ${this.projectId}: Invalid message format`);
-			return;
-		}
-
-		let ws_json_message:any = {};
-
-		try {
-			ws_json_message = JSON.parse(message) as BroadcastMessage;
-		} catch (error) {
-			console.error(`Broadcaster ${this.projectId}: Failed to parse message:`, error);
-			this.sendError(senderId, 'Invalid JSON message format');
-			return;
-		}
-
-		//adding the clientid as from.id
-		if(ws_json_message.from && typeof ws_json_message.from === 'object') {
-			ws_json_message.from.id = senderId;		
-		}
-
-		const targetType = ws_json_message.to?.type ;
-		const targetId = ws_json_message.to?.id;
-
-		if(targetId || targetType) {
-			//route based on to.type
-			const messageStr = JSON.stringify(ws_json_message);
-
-			if(targetId) {
-				const targetClient = this.clients.get(targetId);
-				if(targetClient && targetClient.socket.readyState === WebSocket.OPEN) {
-					try {
-						targetClient.socket.send(messageStr);
-					} catch (error) {
-						console.error(`Broadcaster ${this.projectId}: Failed to send to target:`, error);
-					}
-				}
-			}
-			else {
-				for (const [clientId, client] of this.clients.entries()) {
-					if (clientId !== senderId && client.socket.readyState === WebSocket.OPEN) {
-						if (client.type === targetType) {
-							try {
-								client.socket.send(messageStr);
-							} catch (error) {
-								console.error(`Broadcaster ${this.projectId}: Failed to send to client ${clientId}:`, error);
-							}
-						}
-					}
-				}
-			}
-
-			//send to admin (for monitoring routed messages) - reuse messageStr
-			this.broadcastToadminOptimized(senderId, messageStr);
-		} 
-		//if to is not present then broadcast to others
-		else {
-			this.broadcastToOthers(senderId, ws_json_message);
-		}
-	}
-
-	private handleDisconnection(clientId: string): void {
-		this.clients.delete(clientId);
-		this.lastActivity = Date.now();
-
-		// Schedule cleanup if room is empty
-		if (this.clients.size === 0) {
-			this.scheduleCleanup();
-		}
-	}
 
 	private broadcastToOthers(senderId: string, message: any): void {
 		const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
@@ -235,24 +154,6 @@ export class Broadcaster implements DurableObject {
 		}
 	}
 
-	private broadcastToAll(message: any): void {
-		const messageStr = JSON.stringify(message);
-
-		for (const [clientId, client] of this.clients.entries()) {
-			if (client.socket.readyState === WebSocket.OPEN) {
-				try {
-					client.socket.send(messageStr);
-				} catch (error) {
-					console.error(`Broadcaster ${this.projectId}: Failed to send to client ${clientId}:`, error);
-				}
-			}
-		}
-	}
-
-	private broadcastToadmin(senderId: string, message: any): void {
-		const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
-		this.broadcastToadminOptimized(senderId, messageStr);
-	}
 
 	private broadcastToadminOptimized(senderId: string, messageStr: string): void {
 		for (const [clientId, client] of this.clients.entries()) {
@@ -303,6 +204,9 @@ export class Broadcaster implements DurableObject {
 	}
 
 	private async getStatus(): Promise<Response> {
+		// Sync clients to get accurate status
+		this.syncClientsFromWebSockets();
+
 		const status = {
 			projectId: this.projectId,
 			clientCount: this.clients.size,
@@ -320,5 +224,197 @@ export class Broadcaster implements DurableObject {
 		return new Response(JSON.stringify(status, null, 2), {
 			headers: { 'Content-Type': 'application/json' }
 		});
+	}
+
+	// Hibernatable WebSocket Handlers
+	// These methods replace event listeners and enable automatic hibernation
+
+	/**
+	 * Sync the clients Map from active WebSockets
+	 * This is necessary after hibernation wakeup
+	 */
+	private syncClientsFromWebSockets(): void {
+		const activeSockets = this.state.getWebSockets();
+		const activeClientIds = new Set<string>();
+
+		for (const ws of activeSockets) {
+			const clientInfo = this.getClientInfoFromWebSocket(ws);
+			if (clientInfo) {
+				activeClientIds.add(clientInfo.clientId);
+
+				// Add to clients Map if not already present
+				if (!this.clients.has(clientInfo.clientId)) {
+					const tags = (ws as any).deserializeAttachment();
+					let connectedAt = Date.now();
+					let userAgent = 'unknown';
+					let origin = 'unknown';
+
+					for (const tag of tags) {
+						if (typeof tag === 'string') {
+							if (tag.startsWith('connectedAt:')) {
+								connectedAt = parseInt(tag.substring(12));
+							} else if (tag.startsWith('userAgent:')) {
+								userAgent = tag.substring(10);
+							} else if (tag.startsWith('origin:')) {
+								origin = tag.substring(7);
+							}
+						}
+					}
+
+					this.clients.set(clientInfo.clientId, {
+						id: clientInfo.clientId,
+						socket: ws,
+						connectedAt: connectedAt,
+						type: clientInfo.type,
+						metadata: {
+							userAgent: userAgent,
+							origin: origin
+						}
+					});
+				}
+			}
+		}
+
+		// Remove disconnected clients from Map
+		for (const clientId of this.clients.keys()) {
+			if (!activeClientIds.has(clientId)) {
+				this.clients.delete(clientId);
+			}
+		}
+	}
+
+	/**
+	 * Extract client metadata from WebSocket tags
+	 */
+	private getClientInfoFromWebSocket(ws: WebSocket): { clientId: string; type: string } | null {
+		const tags = (ws as any).deserializeAttachment();
+		if (!tags || !Array.isArray(tags)) {
+			return null;
+		}
+
+		let clientId = '';
+		let type = '';
+
+		for (const tag of tags) {
+			if (typeof tag === 'string') {
+				if (tag.startsWith('clientId:')) {
+					clientId = tag.substring(9);
+				} else if (tag.startsWith('type:')) {
+					type = tag.substring(5);
+				}
+			}
+		}
+
+		return clientId && type ? { clientId, type } : null;
+	}
+
+	/**
+	 * Called when a WebSocket message is received
+	 * The DO automatically wakes up from hibernation to handle this
+	 */
+	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		this.lastActivity = Date.now();
+
+		// Sync clients after hibernation wakeup
+		this.syncClientsFromWebSockets();
+
+		const clientInfo = this.getClientInfoFromWebSocket(ws);
+		if (!clientInfo) {
+			console.error(`Broadcaster ${this.projectId}: Could not extract client info from WebSocket`);
+			return;
+		}
+
+		const senderId = clientInfo.clientId;
+
+		// Convert ArrayBuffer to string if needed
+		const messageStr = typeof message === 'string' ? message : new TextDecoder().decode(message);
+
+		if (!messageStr || typeof messageStr !== 'string') {
+			console.error(`Broadcaster ${this.projectId}: Invalid message format`);
+			return;
+		}
+
+		let ws_json_message: any = {};
+
+		try {
+			ws_json_message = JSON.parse(messageStr) as BroadcastMessage;
+		} catch (error) {
+			console.error(`Broadcaster ${this.projectId}: Failed to parse message:`, error);
+			this.sendError(senderId, 'Invalid JSON message format');
+			return;
+		}
+
+		// Adding the clientid as from.id
+		if (ws_json_message.from && typeof ws_json_message.from === 'object') {
+			ws_json_message.from.id = senderId;
+		}
+
+		const targetType = ws_json_message.to?.type;
+		const targetId = ws_json_message.to?.id;
+
+		if (targetId || targetType) {
+			// Route based on to.type
+			const messageToSend = JSON.stringify(ws_json_message);
+
+			if (targetId) {
+				const targetClient = this.clients.get(targetId);
+				if (targetClient && targetClient.socket.readyState === WebSocket.OPEN) {
+					try {
+						targetClient.socket.send(messageToSend);
+					} catch (error) {
+						console.error(`Broadcaster ${this.projectId}: Failed to send to target:`, error);
+					}
+				}
+			} else {
+				for (const [clientId, client] of this.clients.entries()) {
+					if (clientId !== senderId && client.socket.readyState === WebSocket.OPEN) {
+						if (client.type === targetType) {
+							try {
+								client.socket.send(messageToSend);
+							} catch (error) {
+								console.error(`Broadcaster ${this.projectId}: Failed to send to client ${clientId}:`, error);
+							}
+						}
+					}
+				}
+			}
+
+			// Send to admin (for monitoring routed messages)
+			this.broadcastToadminOptimized(senderId, messageToSend);
+		}
+		// If to is not present then broadcast to others
+		else {
+			this.broadcastToOthers(senderId, ws_json_message);
+		}
+	}
+
+	/**
+	 * Called when a WebSocket connection is closed
+	 */
+	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+		const clientInfo = this.getClientInfoFromWebSocket(ws);
+		if (!clientInfo) {
+			return;
+		}
+
+		this.clients.delete(clientInfo.clientId);
+		this.lastActivity = Date.now();
+
+		// Schedule cleanup if room is empty
+		if (this.clients.size === 0) {
+			this.scheduleCleanup();
+		}
+	}
+
+	/**
+	 * Called when a WebSocket encounters an error
+	 */
+	async webSocketError(ws: WebSocket, error: any): Promise<void> {
+		const clientInfo = this.getClientInfoFromWebSocket(ws);
+		if (clientInfo) {
+			console.error(`Broadcaster ${this.projectId}: WebSocket error for client ${clientInfo.clientId}:`, error);
+		} else {
+			console.error(`Broadcaster ${this.projectId}: WebSocket error:`, error);
+		}
 	}
 }
