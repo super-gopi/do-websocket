@@ -1,4 +1,4 @@
-name = "user-websocket"
+name = "sa-websocket"
 main = "src/index.ts"
 compatibility_date = "2024-09-02"
 compatibility_flags = ["nodejs_compat"]
@@ -12,14 +12,6 @@ class_name = "Broadcaster"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Broadcaster"]
-
-[[migrations]]
-tag = "v2"
-# Previous migration (keeping for continuity)
-
-[[migrations]]
-tag = "v3"
-# Code update - changed from userId to projectId
 
 [observability.logs]
 enabled = true
