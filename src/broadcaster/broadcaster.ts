@@ -78,21 +78,25 @@ export class Broadcaster implements DurableObject {
 			const [client, server] = Object.values(webSocketPair);
 
 			const clientId = crypto.randomUUID();
+			const connectedAt = Date.now();
 
-			// Use hibernatable WebSockets - attach metadata as tags
-			// Tags format: ["clientId:xxx", "type:xxx", "connectedAt:xxx"]
-			this.state.acceptWebSocket(server, [
-				`clientId:${clientId}`,
-				`type:${type}`,
-				`connectedAt:${Date.now()}`,
-				`userAgent:${request.headers.get('User-Agent') || 'unknown'}`,
-				`origin:${request.headers.get('Origin') || 'unknown'}`
-			]);
+			// Accept the WebSocket for hibernation
+			this.state.acceptWebSocket(server);
+
+			// Attach metadata using serializeAttachment for hibernatable WebSockets
+			const clientMetadata = {
+				clientId: clientId,
+				type: type,
+				connectedAt: connectedAt,
+				userAgent: request.headers.get('User-Agent') || 'unknown',
+				origin: request.headers.get('Origin') || 'unknown'
+			};
+			(server as any).serializeAttachment(clientMetadata);
 
 			const broadcastClient: BroadcastClient = {
 				id: clientId,
 				socket: server,
-				connectedAt: Date.now(),
+				connectedAt: connectedAt,
 				type: type,
 				metadata: {
 					userAgent: request.headers.get('User-Agent'),
@@ -238,37 +242,20 @@ export class Broadcaster implements DurableObject {
 		const activeClientIds = new Set<string>();
 
 		for (const ws of activeSockets) {
-			const clientInfo = this.getClientInfoFromWebSocket(ws);
-			if (clientInfo) {
-				activeClientIds.add(clientInfo.clientId);
+			const metadata = (ws as any).deserializeAttachment();
+			if (metadata && typeof metadata === 'object' && metadata.clientId && metadata.type) {
+				activeClientIds.add(metadata.clientId);
 
 				// Add to clients Map if not already present
-				if (!this.clients.has(clientInfo.clientId)) {
-					const tags = (ws as any).deserializeAttachment();
-					let connectedAt = Date.now();
-					let userAgent = 'unknown';
-					let origin = 'unknown';
-
-					for (const tag of tags) {
-						if (typeof tag === 'string') {
-							if (tag.startsWith('connectedAt:')) {
-								connectedAt = parseInt(tag.substring(12));
-							} else if (tag.startsWith('userAgent:')) {
-								userAgent = tag.substring(10);
-							} else if (tag.startsWith('origin:')) {
-								origin = tag.substring(7);
-							}
-						}
-					}
-
-					this.clients.set(clientInfo.clientId, {
-						id: clientInfo.clientId,
+				if (!this.clients.has(metadata.clientId)) {
+					this.clients.set(metadata.clientId, {
+						id: metadata.clientId,
 						socket: ws,
-						connectedAt: connectedAt,
-						type: clientInfo.type,
+						connectedAt: metadata.connectedAt || Date.now(),
+						type: metadata.type,
 						metadata: {
-							userAgent: userAgent,
-							origin: origin
+							userAgent: metadata.userAgent || 'unknown',
+							origin: metadata.origin || 'unknown'
 						}
 					});
 				}
@@ -284,26 +271,16 @@ export class Broadcaster implements DurableObject {
 	}
 
 	/**
-	 * Extract client metadata from WebSocket tags
+	 * Extract client metadata from WebSocket attachment
 	 */
 	private getClientInfoFromWebSocket(ws: WebSocket): { clientId: string; type: string } | null {
-		const tags = (ws as any).deserializeAttachment();
-		if (!tags || !Array.isArray(tags)) {
+		const metadata = (ws as any).deserializeAttachment();
+		if (!metadata || typeof metadata !== 'object') {
 			return null;
 		}
 
-		let clientId = '';
-		let type = '';
-
-		for (const tag of tags) {
-			if (typeof tag === 'string') {
-				if (tag.startsWith('clientId:')) {
-					clientId = tag.substring(9);
-				} else if (tag.startsWith('type:')) {
-					type = tag.substring(5);
-				}
-			}
-		}
+		const clientId = metadata.clientId;
+		const type = metadata.type;
 
 		return clientId && type ? { clientId, type } : null;
 	}
