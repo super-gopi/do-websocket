@@ -1,6 +1,12 @@
 import { BroadcastClient, BroadcastMessage, Env } from './types';
+import { UsageStats } from '../usage/types';
 
+// Storage keys
+const STORAGE_KEY_TOTAL_REQUESTS = 'totalRequests';
+const STORAGE_KEY_DAILY_REQUESTS = 'dailyRequests';
 
+// Type for daily requests map: { "2025-01-28": 150, "2025-01-27": 200, ... }
+type DailyRequestsMap = Record<string, number>;
 
 export class Broadcaster implements DurableObject {
 	private state: DurableObjectState;
@@ -14,6 +20,63 @@ export class Broadcaster implements DurableObject {
 		this.env = env;
 		this.lastActivity = Date.now();
 		this.projectId = state.id.name || 'unknown';
+	}
+
+	/**
+	 * Get today's date in YYYY-MM-DD format
+	 */
+	private getTodayDate(): string {
+		return new Date().toISOString().split('T')[0];
+	}
+
+	/**
+	 * Increment the request count for the project
+	 */
+	private async incrementRequestCount(): Promise<void> {
+		const today = this.getTodayDate();
+
+		// Increment total requests
+		const totalRequests = (await this.state.storage.get<number>(STORAGE_KEY_TOTAL_REQUESTS)) || 0;
+		await this.state.storage.put(STORAGE_KEY_TOTAL_REQUESTS, totalRequests + 1);
+
+		// Get and update daily requests map
+		const dailyRequests = (await this.state.storage.get<DailyRequestsMap>(STORAGE_KEY_DAILY_REQUESTS)) || {};
+
+		// Increment today's count
+		dailyRequests[today] = (dailyRequests[today] || 0) + 1;
+
+		// Clean up old entries (keep last 30 days)
+		const cutoffDate = new Date();
+		cutoffDate.setDate(cutoffDate.getDate() - 30);
+		const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+		for (const date of Object.keys(dailyRequests)) {
+			if (date < cutoffStr) {
+				delete dailyRequests[date];
+			}
+		}
+
+		// Save updated map
+		await this.state.storage.put(STORAGE_KEY_DAILY_REQUESTS, dailyRequests);
+	}
+
+	/**
+	 * Get usage statistics for the project
+	 */
+	private async getUsageStats(): Promise<UsageStats> {
+		const totalRequests = (await this.state.storage.get<number>(STORAGE_KEY_TOTAL_REQUESTS)) || 0;
+		const dailyRequestsMap = (await this.state.storage.get<DailyRequestsMap>(STORAGE_KEY_DAILY_REQUESTS)) || {};
+
+		// Convert map to sorted array
+		const dailyRequests = Object.entries(dailyRequestsMap)
+			.map(([date, count]) => ({ date, count }))
+			.sort((a, b) => b.date.localeCompare(a.date)); // Sort descending by date
+
+		return {
+			projectId: this.projectId,
+			totalRequests,
+			dailyRequests,
+		};
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -47,6 +110,16 @@ export class Broadcaster implements DurableObject {
 				clientCount: this.clients.size,
 				lastActivity: this.lastActivity,
 				timestamp: Date.now()
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+
+		if (url.pathname === '/usage') {
+			const stats = await this.getUsageStats();
+			return new Response(JSON.stringify({
+				success: true,
+				data: stats,
 			}), {
 				headers: { 'Content-Type': 'application/json' }
 			});
@@ -291,6 +364,9 @@ export class Broadcaster implements DurableObject {
 	 */
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
 		this.lastActivity = Date.now();
+
+		// Increment request count for usage tracking
+		await this.incrementRequestCount();
 
 		// Sync clients after hibernation wakeup
 		this.syncClientsFromWebSockets();

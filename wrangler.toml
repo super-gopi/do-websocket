@@ -16,7 +16,15 @@ new_sqlite_classes = ["Broadcaster"]
 [observability.logs]
 enabled = true
 
-# Optional: Environment variables
+# Environment variables (set via wrangler secret or dashboard)
+# These should be set as secrets, not in this file:
+#   wrangler secret put DATABASE_URL
+#   wrangler secret put SUPERATOM_SERVICE_KEY
+#
+# DATABASE_URL: Your Neon PostgreSQL connection string
+# SUPERATOM_SERVICE_KEY: Master key for API key management endpoints
+
+# Optional: Non-sensitive environment variables
 # [vars]
 # ENVIRONMENT = "production"
 

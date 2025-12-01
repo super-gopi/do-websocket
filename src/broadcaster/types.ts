@@ -14,6 +14,8 @@ export interface BroadcastMessage {
 
 export interface Env {
 	BROADCASTER: DurableObjectNamespace;
+	DATABASE_URL: string;
+	SUPERATOM_SERVICE_KEY: string;
 }
 
 export interface BroadcastClient {

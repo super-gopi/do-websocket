@@ -258,6 +258,211 @@ The Broadcaster sends these system messages:
   - Sent to all remaining clients
 - `error`: Error notifications for invalid messages or other issues
 
+## API Key Authentication
+
+The WebSocket server supports optional API key authentication for securing project connections.
+
+### Setup
+
+1. **Set Cloudflare Secrets:**
+   ```bash
+   # Your Neon PostgreSQL connection string
+   wrangler secret put DATABASE_URL
+
+   # Service key for API management (generate a secure random string)
+   wrangler secret put SUPERATOM_SERVICE_KEY
+   ```
+
+2. **Create the database table:**
+   ```bash
+   psql "YOUR_DATABASE_URL" -f src/db/schema.sql
+   ```
+
+### API Key Management Endpoints
+
+All management endpoints require the service key in the `Authorization` header:
+```
+Authorization: Bearer <SUPERATOM_SERVICE_KEY>
+```
+
+#### Create API Key
+```bash
+POST /api-keys
+Content-Type: application/json
+
+{
+  "projectId": "my-project",
+  "description": "Production API key"
+}
+```
+
+**cURL:**
+```bash
+curl -X POST https://your-worker.workers.dev/api-keys \
+  -H "Authorization: Bearer YOUR_SERVICE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"projectId": "my-project", "description": "Production API key"}'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "projectId": "my-project",
+    "apiKey": "sa_live_a1b2c3d4e5f6...",
+    "keyPrefix": "sa_live_a1b2",
+    "createdAt": "2025-01-28T10:30:00.000Z"
+  }
+}
+```
+> **Important:** Store the `apiKey` securely - it cannot be retrieved again!
+
+#### List All API Keys
+```bash
+GET /api-keys
+```
+
+**cURL:**
+```bash
+curl https://your-worker.workers.dev/api-keys \
+  -H "Authorization: Bearer YOUR_SERVICE_KEY"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "keys": [
+      {
+        "projectId": "my-project",
+        "keyPrefix": "sa_live_a1b2",
+        "createdAt": "2025-01-28T10:30:00.000Z",
+        "lastUsedAt": "2025-01-28T12:00:00.000Z",
+        "isActive": true,
+        "description": "Production API key"
+      }
+    ]
+  }
+}
+```
+
+#### Get API Key Info
+```bash
+GET /api-keys/{projectId}
+```
+
+**cURL:**
+```bash
+curl https://your-worker.workers.dev/api-keys/my-project \
+  -H "Authorization: Bearer YOUR_SERVICE_KEY"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "projectId": "my-project",
+    "keyPrefix": "sa_live_a1b2",
+    "createdAt": "2025-01-28T10:30:00.000Z",
+    "lastUsedAt": "2025-01-28T12:00:00.000Z",
+    "isActive": true,
+    "description": "Production API key"
+  }
+}
+```
+
+#### Revoke API Key
+```bash
+DELETE /api-keys/{projectId}
+```
+
+**cURL:**
+```bash
+curl -X DELETE https://your-worker.workers.dev/api-keys/my-project \
+  -H "Authorization: Bearer YOUR_SERVICE_KEY"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "message": "API key revoked for project: my-project"
+  }
+}
+```
+
+### Using API Keys for WebSocket Connections
+
+API key validation is **optional**. If an API key is provided, it will be validated:
+
+**Via Query Parameter:**
+```javascript
+const ws = new WebSocket('wss://your-worker.workers.dev/websocket?projectId=my-project&type=runtime&apiKey=sa_live_xxx');
+```
+
+**Via Header (for HTTP requests):**
+```
+x-api-key: sa_live_xxx
+```
+
+### API Key Format
+
+Keys follow a prefixed format for easy identification:
+- **Production:** `sa_live_<32 random hex chars>`
+- **Example:** `sa_live_a1b2c3d4e5f6789012345678901234ab`
+
+### Response Format
+
+All API key endpoints return responses in this format:
+```typescript
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  errors?: string[];
+}
+```
+
+---
+
+## Usage Tracking
+
+The server tracks WebSocket message counts per project.
+
+### Get Usage Stats
+```bash
+GET /usage?projectId={projectId}
+```
+
+**cURL:**
+```bash
+curl "https://your-worker.workers.dev/usage?projectId=my-project"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "projectId": "my-project",
+    "totalRequests": 12543,
+    "dailyRequests": [
+      { "date": "2025-01-28", "count": 150 },
+      { "date": "2025-01-27", "count": 200 },
+      { "date": "2025-01-26", "count": 180 }
+    ]
+  }
+}
+```
+
+- **totalRequests:** Total messages processed for this project (all time)
+- **dailyRequests:** Message counts per day (last 30 days, sorted descending)
+
+---
+
 ## Environment Variables
 
 Set these in your `wrangler.toml` or Cloudflare dashboard:
@@ -266,6 +471,13 @@ Set these in your `wrangler.toml` or Cloudflare dashboard:
 [vars]
 ENVIRONMENT = "production"
 ```
+
+### Required Secrets (set via `wrangler secret put`)
+
+| Secret | Description |
+|--------|-------------|
+| `DATABASE_URL` | Neon PostgreSQL connection string |
+| `SUPERATOM_SERVICE_KEY` | Master key for API key management |
 
 ## Development
 
