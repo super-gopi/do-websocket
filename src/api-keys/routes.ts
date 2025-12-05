@@ -12,12 +12,24 @@ interface ApiKeyEnv {
 }
 
 /**
+ * CORS headers for cross-origin requests
+ */
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key',
+};
+
+/**
  * Helper to create a JSON response with ApiResponse format
  */
 function jsonResponse<T>(response: ApiResponse<T>, status: number = 200): Response {
     return new Response(JSON.stringify(response), {
         status,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...corsHeaders,
+        },
     });
 }
 
@@ -54,6 +66,14 @@ export async function handleApiKeyRoutes(
     // Check if this is an API key route
     if (!path.startsWith('/api-keys')) {
         return null; // Not an API key route
+    }
+
+    // Handle CORS preflight requests
+    if (request.method === 'OPTIONS') {
+        return new Response(null, {
+            status: 204,
+            headers: corsHeaders,
+        });
     }
 
     // Validate service key for all API key operations
