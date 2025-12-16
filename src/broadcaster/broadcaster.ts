@@ -397,6 +397,30 @@ export class Broadcaster implements DurableObject {
 			return;
 		}
 
+		// Handle PING message - respond with PONG immediately
+		// This keeps the connection alive and prevents idle timeout
+		if (ws_json_message.type === 'PING') {
+			try {
+				const pongMessage: BroadcastMessage = {
+					id: crypto.randomUUID(),
+					type: 'PONG',
+					from: {
+						type: 'system'
+					},
+					payload: {
+						timestamp: Date.now(),
+						originalTimestamp: ws_json_message.payload?.timestamp
+					}
+				};
+				ws.send(JSON.stringify(pongMessage));
+				// Don't broadcast PING/PONG to other clients
+				return;
+			} catch (error) {
+				console.error(`Broadcaster ${this.projectId}: Failed to send PONG:`, error);
+				return;
+			}
+		}
+
 		// Adding the clientid as from.id
 		if (ws_json_message.from && typeof ws_json_message.from === 'object') {
 			ws_json_message.from.id = senderId;
